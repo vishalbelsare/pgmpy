@@ -3,23 +3,22 @@
 from collections import defaultdict
 from itertools import chain
 
-import numpy as np
-
-from pgmpy.factors.discrete import TabularCPD
+from pgmpy.factors.discrete import DiscreteFactor, TabularCPD
 from pgmpy.models import (
-    BayesianNetwork,
+    DiscreteBayesianNetwork,
+    DiscreteMarkovNetwork,
     DynamicBayesianNetwork,
     FactorGraph,
     JunctionTree,
-    MarkovNetwork,
 )
+from pgmpy.utils import compat_fns
 
 
-class Inference(object):
+class Inference:
     """
     Base class for all inference algorithms.
 
-    Converts BayesianNetwork and MarkovNetwork to a uniform representation so that inference
+    Converts DiscreteBayesianNetwork and DiscreteMarkovNetwork to a uniform representation so that inference
     algorithms can be applied. Also, it checks if all the associated CPDs / Factors are
     consistent with the model.
 
@@ -27,37 +26,50 @@ class Inference(object):
 
     Parameters
     ----------
-    model: pgmpy.models.BayesianNetwork or pgmpy.models.MarkovNetwork or pgmpy.models.NoisyOrModel
+    model: pgmpy.models.DiscreteBayesianNetwork or pgmpy.models.DiscreteMarkovNetwork
         model for which to initialize the inference object.
 
     Examples
     --------
     >>> from pgmpy.inference import Inference
-    >>> from pgmpy.models import BayesianNetwork
+    >>> from pgmpy.models import DiscreteBayesianNetwork
     >>> from pgmpy.factors.discrete import TabularCPD
-    >>> student = BayesianNetwork([('diff', 'grade'), ('intel', 'grade')])
-    >>> diff_cpd = TabularCPD('diff', 2, [[0.2], [0.8]])
-    >>> intel_cpd = TabularCPD('intel', 2, [[0.3], [0.7]])
-    >>> grade_cpd = TabularCPD('grade', 3, [[0.1, 0.1, 0.1, 0.1],
-    ...                                     [0.1, 0.1, 0.1, 0.1],
-    ...                                     [0.8, 0.8, 0.8, 0.8]],
-    ...                        evidence=['diff', 'intel'], evidence_card=[2, 2])
+    >>> student = DiscreteBayesianNetwork([("diff", "grade"), ("intel", "grade")])
+    >>> diff_cpd = TabularCPD("diff", 2, [[0.2], [0.8]])
+    >>> intel_cpd = TabularCPD("intel", 2, [[0.3], [0.7]])
+    >>> grade_cpd = TabularCPD(
+    ...     "grade",
+    ...     3,
+    ...     [[0.1, 0.1, 0.1, 0.1], [0.1, 0.1, 0.1, 0.1], [0.8, 0.8, 0.8, 0.8]],
+    ...     evidence=["diff", "intel"],
+    ...     evidence_card=[2, 2],
+    ... )
     >>> student.add_cpds(diff_cpd, intel_cpd, grade_cpd)
     >>> model = Inference(student)
 
-    >>> from pgmpy.models import MarkovNetwork
+    >>> from pgmpy.models import DiscreteMarkovNetwork
     >>> from pgmpy.factors.discrete import DiscreteFactor
     >>> import numpy as np
-    >>> student = MarkovNetwork([('Alice', 'Bob'), ('Bob', 'Charles'),
-    ...                        ('Charles', 'Debbie'), ('Debbie', 'Alice')])
-    >>> factor_a_b = DiscreteFactor(['Alice', 'Bob'], cardinality=[2, 2],
-    ...                             values=np.random.rand(4))
-    >>> factor_b_c = DiscreteFactor(['Bob', 'Charles'], cardinality=[2, 2],
-    ...                             values=np.random.rand(4))
-    >>> factor_c_d = DiscreteFactor(['Charles', 'Debbie'], cardinality=[2, 2],
-    ...                             values=np.random.rand(4))
-    >>> factor_d_a = DiscreteFactor(['Debbie', 'Alice'], cardinality=[2, 2],
-    ...                             values=np.random.rand(4))
+    >>> student = DiscreteMarkovNetwork(
+    ...     [
+    ...         ("Alice", "Bob"),
+    ...         ("Bob", "Charles"),
+    ...         ("Charles", "Debbie"),
+    ...         ("Debbie", "Alice"),
+    ...     ]
+    ... )
+    >>> factor_a_b = DiscreteFactor(
+    ...     ["Alice", "Bob"], cardinality=[2, 2], values=np.random.rand(4)
+    ... )
+    >>> factor_b_c = DiscreteFactor(
+    ...     ["Bob", "Charles"], cardinality=[2, 2], values=np.random.rand(4)
+    ... )
+    >>> factor_c_d = DiscreteFactor(
+    ...     ["Charles", "Debbie"], cardinality=[2, 2], values=np.random.rand(4)
+    ... )
+    >>> factor_d_a = DiscreteFactor(
+    ...     ["Debbie", "Alice"], cardinality=[2, 2], values=np.random.rand(4)
+    ... )
     >>> student.add_factors(factor_a_b, factor_b_c, factor_c_d, factor_d_a)
     >>> model = Inference(student)
     """
@@ -84,7 +96,7 @@ class Inference(object):
         self.cardinality = {}
         self.factors = defaultdict(list)
 
-        if isinstance(self.model, BayesianNetwork):
+        if isinstance(self.model, DiscreteBayesianNetwork):
             self.state_names_map = {}
             for node in self.model.nodes():
                 cpd = self.model.get_cpds(node)
@@ -95,7 +107,7 @@ class Inference(object):
                     self.factors[var].append(cpd)
                 self.state_names_map.update(cpd.no_to_name)
 
-        elif isinstance(self.model, (MarkovNetwork, FactorGraph, JunctionTree)):
+        elif isinstance(self.model, (DiscreteMarkovNetwork, FactorGraph, JunctionTree)):
             self.cardinality = self.model.get_cardinality()
 
             for factor in self.model.get_factors():
@@ -103,18 +115,35 @@ class Inference(object):
                     self.factors[var].append(factor)
 
         elif isinstance(self.model, DynamicBayesianNetwork):
-            self.start_bayesian_model = BayesianNetwork(self.model.get_intra_edges(0))
+            # Initialize main inference properties for DBN
+            self.state_names_map = {}
+            for node in self.model.nodes():
+                cpd = self.model.get_cpds(node)
+                if isinstance(cpd, TabularCPD):
+                    self.cardinality[node] = cpd.variable_card
+                    cpd_factor = cpd.to_factor()
+                for var in cpd_factor.scope():
+                    self.factors[var].append(cpd_factor)
+                self.state_names_map.update(cpd_factor.no_to_name)
+
+            # Create start_bayesian_model
+            intra_edges_0 = self.model.get_intra_edges(0)
+            self.start_bayesian_model = DiscreteBayesianNetwork(intra_edges_0)
+
+            # Add all nodes from time slice 0 even if there are no intra-edges
+            time_slice_0_nodes = self.model.get_slice_nodes(time_slice=0)
+            for node in time_slice_0_nodes:
+                if node not in self.start_bayesian_model.nodes():
+                    self.start_bayesian_model.add_node(node)
+
             self.start_bayesian_model.add_cpds(*self.model.get_cpds(time_slice=0))
-            cpd_inter = [
-                self.model.get_cpds(node) for node in self.model.get_interface_nodes(1)
-            ]
+
+            cpd_inter = [self.model.get_cpds(node) for node in self.model.get_interface_nodes(1)]
             self.interface_nodes = self.model.get_interface_nodes(0)
-            self.one_and_half_model = BayesianNetwork(
+            self.one_and_half_model = DiscreteBayesianNetwork(
                 self.model.get_inter_edges() + self.model.get_intra_edges(1)
             )
-            self.one_and_half_model.add_cpds(
-                *(self.model.get_cpds(time_slice=1) + cpd_inter)
-            )
+            self.one_and_half_model.add_cpds(*(self.model.get_cpds(time_slice=1) + cpd_inter))
 
     def _prune_bayesian_model(self, variables, evidence):
         """
@@ -132,7 +161,7 @@ class Inference(object):
 
         Returns
         -------
-        Pruned model: pgmpy.models.BayesianNetwork
+        Pruned model: pgmpy.models.DiscreteBayesianNetwork
             The pruned model.
 
         Examples
@@ -142,7 +171,7 @@ class Inference(object):
 
         References
         ----------
-        [1] Baker, M., & Boult, T. E. (2013). Pruning Bayesian networks for efficient computation. arXiv preprint arXiv:1304.1112.
+        - :footcite:t:`baker_boult_2013`
         """
         evidence = {} if evidence is None else evidence
         variables = list(self.model.nodes()) if len(variables) == 0 else list(variables)
@@ -164,16 +193,55 @@ class Inference(object):
         cpds = []
         for var in bn.nodes():
             cpd = self.model.get_cpds(var)
-            if set(cpd.scope()) < set(bn.nodes()):
+            scope_diff = set(cpd.scope()) - set(bn.nodes())
+            if len(scope_diff) == 0:
                 cpds.append(cpd)
             else:
-                cpds.append(
-                    cpd.marginalize(set(cpd.scope()) - set(bn.nodes()), inplace=False)
-                )
+                cpds.append(cpd.marginalize(scope_diff, inplace=False))
 
-        bn.add_cpds(*cpds)
+        bn.cpds = cpds
 
         return bn, evidence
+
+    def _check_virtual_evidence(self, virtual_evidence):
+        """
+        Checks the virtual evidence's format is correct. Each evidence must:
+        - Be a TabularCPD instance or a DiscreteFactor on a single variable.
+        - Be targeted to a single variable
+        - Be defined on a variable which is in the model
+        - Have the same cardinality as its corresponding variable in the model
+
+        Parameters
+        ----------
+        virtual_evidence: list
+            A list of TabularCPD instances specifying the virtual evidence for each
+            of the evidence variables.
+        """
+        for cpd in virtual_evidence:
+            if not isinstance(cpd, (TabularCPD, DiscreteFactor)):
+                raise ValueError(
+                    f"Virtual evidence should be an instance of TabularCPD or DiscreteFactor. Got: {type(cpd)}"
+                )
+            if isinstance(cpd, DiscreteFactor):
+                if len(cpd.variables) > 1:
+                    raise ValueError(
+                        f"If cpd is an instance of DiscreteFactor,"
+                        f" it should be defined on a single variable. Got: {cpd}"
+                    )
+            var = cpd.variables[0]
+            if var not in self.model.nodes():
+                raise ValueError("Evidence provided for variable which is not in the model")
+            elif len(cpd.variables) > 1:
+                raise ValueError(
+                    "Virtual evidence should be defined on individual variables."
+                    " Maybe you are looking for soft evidence."
+                )
+
+            elif self.model.get_cardinality(var) != cpd.get_cardinality([var])[var]:
+                raise ValueError(
+                    "The number of states/cardinality for the evidence should"
+                    " be same as the number of states/cardinality of the variable in the model"
+                )
 
     def _virtual_evidence(self, virtual_evidence):
         """
@@ -183,8 +251,8 @@ class Inference(object):
 
         Parameters
         ----------
-        virtual_evidence: dict
-            A dict of TabularCPD instances specifying the virtual evidence for each
+        virtual_evidence: list
+            A list of TabularCPD instances specifying the virtual evidence for each
             of the evidence variables.
 
         Returns
@@ -193,30 +261,16 @@ class Inference(object):
 
         References
         ----------
-        [1] Mrad, Ali Ben, et al. "Uncertain evidence in Bayesian networks: Presentation and comparison on a simple example." International Conference on Information Processing and Management of Uncertainty in Knowledge-Based Systems. Springer, Berlin, Heidelberg, 2012.
+        - :footcite:t:`benmrad_2012`
         """
-        for cpd in virtual_evidence:
-            var = cpd.variables[0]
-            if var not in self.model.nodes():
-                raise ValueError(
-                    "Evidence provided for variable which is not in the model"
-                )
-            elif len(cpd.variables) > 1:
-                raise ValueError(
-                    "Virtual evidence should be defined on individual variables. Maybe you are looking for soft evidence."
-                )
-
-            elif self.model.get_cardinality(var) != cpd.get_cardinality([var])[var]:
-                raise ValueError(
-                    "The number of states/cardinality for the evidence should be same as the number of states/cardinality of the variable in the model"
-                )
+        self._check_virtual_evidence(virtual_evidence)
 
         bn = self.model.copy()
         for cpd in virtual_evidence:
             var = cpd.variables[0]
             new_var = "__" + var
             bn.add_edge(var, new_var)
-            values = np.vstack((cpd.values, 1 - cpd.values))
+            values = compat_fns.get_compute_backend().vstack((cpd.values, 1 - cpd.values))
             new_cpd = TabularCPD(
                 variable=new_var,
                 variable_card=2,
@@ -228,3 +282,16 @@ class Inference(object):
             bn.add_cpds(new_cpd)
 
         self.__init__(bn)
+
+    @staticmethod
+    def _get_virtual_evidence_var_list(virtual_evidence):
+        """
+        Returns the list of variables that have a virtual evidence.
+
+        Parameters
+        ----------
+        virtual_evidence: list
+            A list of TabularCPD instances specifying the virtual evidence for each
+            of the evidence variables.
+        """
+        return [cpd.variables[0] for cpd in virtual_evidence]

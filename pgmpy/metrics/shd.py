@@ -1,0 +1,102 @@
+import numpy as np
+
+from pgmpy.base import DAG, PDAG
+from pgmpy.metrics import BaseSupervisedMetric
+
+
+class SHD(BaseSupervisedMetric):
+    r"""
+    Computes the Structural Hamming Distance (SHD) between two graphs.
+
+    Given two graphs (DAGs or PDAGs) :math:`G_1` and :math:`G_2` over the same vertex set, let :math:`S(G)` denote the
+    skeleton (underlying undirected graph) of :math:`G`. The SHD is:
+
+    .. math::
+
+        \text{SHD}(G_1, G_2) = |S(G_1) \triangle S(G_2)|
+            + p \cdot |\{e \in S(G_1) \cap S(G_2) :
+            \text{orient}(e, G_1) \neq \text{orient}(e, G_2)\}|
+
+    where :math:`\triangle` js the symmetric difference and :math:`p` is the ``edge_reverse_penalty`` (default 1; set to
+    2 to count a reversal as one deletion plus one addition).
+
+    For PDAGs, an undirected edge is represented as a pair of directed edges, so any orientation mismatch on a shared
+    skeleton edge counts as one operation.
+
+    Parameters
+    ----------
+    edge_reverse_penalty: int (default: 1)
+        Penalty :math:`p` for orientation mismatches on shared skeleton edges.
+
+    Examples
+    --------
+    >>> from pgmpy.metrics import SHD
+    >>> from pgmpy.base import DAG
+    >>> dag1 = DAG([(1, 2), (2, 3)])
+    >>> dag2 = DAG([(2, 1), (2, 3)])
+    >>> shd = SHD()
+    >>> shd(true_causal_graph=dag1, est_causal_graph=dag2)
+    1
+    >>> shd_double = SHD(edge_reverse_penalty=2)
+    >>> shd_double(true_causal_graph=dag1, est_causal_graph=dag2)
+    2
+
+    PDAGs are also supported:
+
+    >>> from pgmpy.base import PDAG
+    >>> pdag1 = PDAG(edge_list=[(1, 2, "->"), (2, 3, "--")])
+    >>> pdag2 = PDAG(edge_list=[(1, 2, "->"), (2, 3, "->")])
+    >>> shd(true_causal_graph=pdag1, est_causal_graph=pdag2)
+    1
+    """
+
+    _tags = {
+        "name": "shd",
+        "default_for": "supervised",
+        "is_symmetric": True,
+        "supported_graph_types": [DAG, PDAG],
+        "output_type": "scalar",
+        "lower_is_better": True,
+    }
+
+    def __init__(self, edge_reverse_penalty=1):
+        if edge_reverse_penalty not in (1, 2):
+            raise ValueError(f"edge_reverse_penalty must be 1 or 2, got '{edge_reverse_penalty}'.")
+        self.edge_reverse_penalty = edge_reverse_penalty
+        super().__init__()
+
+    def _evaluate(self, true_causal_graph, est_causal_graph):
+        # Both DAG and PDAG expose ``to_adjacency``; the binary encoding gives a 0/1 directed
+        # adjacency (directed edges asymmetric, undirected edges symmetric). ``copy=True`` keeps the
+        # arrays writable -- under pandas copy-on-write ``to_numpy()`` returns a read-only view, and
+        # the SHD computation mutates ``m1`` in place.
+        nodes_list = list(true_causal_graph.nodes())
+        m1 = true_causal_graph.to_adjacency(encoding="binary", nodelist=nodes_list).to_numpy(copy=True)
+        m2 = est_causal_graph.to_adjacency(encoding="binary", nodelist=nodes_list).to_numpy(copy=True)
+
+        shd = 0
+
+        # Skeletons: 1 wherever there is any edge (directed or undirected) between a pair.
+        # For PDAGs, undirected edges have both m[i, j] and m[j, i] set to 1, so m + m.T
+        # produces a 2 at those positions; clipping to {0, 1} keeps the skeleton comparison
+        # honest and avoids double-counting an undirected-vs-nothing difference.
+        s1 = np.clip(m1 + m1.T, 0, 1)
+        s2 = np.clip(m2 + m2.T, 0, 1)
+
+        # Edges that are in m1 but not in m2 (deletions from m1)
+        ds = s1 - s2
+        ind = np.where(ds > 0)
+        m1[ind] = 0
+        shd = shd + (len(ind[0]) / 2)
+
+        # Edges that are in m2 but not in m1 (additions to m1)
+        ind = np.where(ds < 0)
+        m1[ind] = m2[ind]
+        shd = shd + (len(ind[0]) / 2)
+
+        # Edges that need to be simply reversed
+        d = np.abs(m1 - m2)
+        reversal_count = np.sum((d + d.T) > 0) / 2
+        shd = shd + (reversal_count * self.edge_reverse_penalty)
+
+        return int(shd)

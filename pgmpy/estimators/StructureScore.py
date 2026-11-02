@@ -1,355 +1,187 @@
-#!/usr/bin/env python
-import numpy as np
-from scipy.special import gammaln
-from math import lgamma, log
+"""Deprecated compatibility shims for :mod:`pgmpy.structure_score`.
 
-from pgmpy.estimators import BaseEstimator
+This module is deprecated and will be removed in v2.0. Every class defined
+here is a thin wrapper that delegates to its canonical implementation in
+:mod:`pgmpy.structure_score`; no scoring logic lives in this module anymore.
 
+Notes
+-----
+- ``StructureScore`` (the legacy base class) is an alias of
+  :class:`pgmpy.structure_score.BaseStructureScore`, so ``isinstance`` checks
+  against either name work for both legacy and new-style score instances.
+"""
 
-class StructureScore(BaseEstimator):
-    def __init__(self, data, **kwargs):
-        """
-        Abstract base class for structure scoring classes in pgmpy. Use any of the derived classes
-        K2Score, BDeuScore, or BicScore. Scoring classes are
-        used to measure how well a model is able to describe the given data set.
+from __future__ import annotations
 
-        Parameters
-        ----------
-        data: pandas DataFrame object
-            dataframe object where each column represents one variable.
-            (If some values in the data are missing the data cells should be set to `numpy.NaN`.
-            Note that pandas converts each column containing `numpy.NaN`s to dtype `float`.)
+import pandas as pd
 
-        state_names: dict (optional)
-            A dict indicating, for each variable, the discrete set of states (or values)
-            that the variable can take. If unspecified, the observed values in the data set
-            are taken to be the only possible states.
+from pgmpy.structure_score import AIC as _AIC
+from pgmpy.structure_score import BIC as _BIC
+from pgmpy.structure_score import K2 as _K2
+from pgmpy.structure_score import AICCondGauss as _AICCondGauss
+from pgmpy.structure_score import AICGauss as _AICGauss
+from pgmpy.structure_score import BaseStructureScore
+from pgmpy.structure_score import BDeu as _BDeu
+from pgmpy.structure_score import BDs as _BDs
+from pgmpy.structure_score import BICCondGauss as _BICCondGauss
+from pgmpy.structure_score import BICGauss as _BICGauss
+from pgmpy.structure_score import LogLikelihood as _LogLikelihood
+from pgmpy.structure_score import LogLikelihoodCondGauss as _LogLikelihoodCondGauss
+from pgmpy.structure_score import LogLikelihoodGauss as _LogLikelihoodGauss
+from pgmpy.structure_score import get_scoring_method as _get_scoring_method
+from pgmpy.utils._warnings import _warn_external
 
-        complete_samples_only: bool (optional, default `True`)
-            Specifies how to deal with missing data, if present. If set to `True` all rows
-            that contain `np.Nan` somewhere are ignored. If `False` then, for each variable,
-            every row where neither the variable nor its parents are `np.NaN` is used.
-            This sets the behavior of the `state_count`-method.
-
-        Reference
-        ---------
-        Koller & Friedman, Probabilistic Graphical Models - Principles and Techniques, 2009
-        Section 18.3
-        """
-        super(StructureScore, self).__init__(data, **kwargs)
-
-    def score(self, model):
-        """
-        Computes a score to measure how well the given `BayesianNetwork` fits
-        to the data set.  (This method relies on the `local_score`-method that
-        is implemented in each subclass.)
-
-        Parameters
-        ----------
-        model: BayesianNetwork instance
-            The Bayesian network that is to be scored. Nodes of the BayesianNetwork need to coincide
-            with column names of data set.
-
-        Returns
-        -------
-        score: float
-            A number indicating the degree of fit between data and model
-
-        Examples
-        --------
-        >>> import pandas as pd
-        >>> import numpy as np
-        >>> from pgmpy.models import BayesianNetwork
-        >>> from pgmpy.estimators import K2Score
-        >>> # create random data sample with 3 variables, where B and C are identical:
-        >>> data = pd.DataFrame(np.random.randint(0, 5, size=(5000, 2)), columns=list('AB'))
-        >>> data['C'] = data['B']
-        >>> K2Score(data).score(BayesianNetwork([['A','B'], ['A','C']]))
-        -24242.367348745247
-        >>> K2Score(data).score(BayesianNetwork([['A','B'], ['B','C']]))
-        -16273.793897051042
-        """
-
-        score = 0
-        for node in model.nodes():
-            score += self.local_score(node, model.predecessors(node))
-        score += self.structure_prior(model)
-        return score
-
-    def structure_prior(self, model):
-        """A (log) prior distribution over models. Currently unused (= uniform)."""
-        return 0
-
-    def structure_prior_ratio(self, operation):
-        """Return the log ratio of the prior probabilities for a given proposed change to the DAG.
-        Currently unused (=uniform)."""
-        return 0
+# Legacy base class. Aliased to the canonical base so that isinstance checks
+# against `pgmpy.estimators.StructureScore` keep working for legacy shims,
+# new-style scores, and user-defined subclasses alike.
+StructureScore = BaseStructureScore
 
 
-class K2Score(StructureScore):
-    def __init__(self, data, **kwargs):
-        """
-        Class for Bayesian structure scoring for BayesianNetworks with Dirichlet priors.
-        The K2 score is the result of setting all Dirichlet hyperparameters/pseudo_counts to 1.
-        The `score`-method measures how well a model is able to describe the given data set.
+def _warn_deprecated(old_name: str, new_name: str) -> None:
+    _warn_external(
+        f"`pgmpy.estimators.{old_name}` is deprecated since v1.1.0 and will be removed in v2.0. "
+        f"Use `pgmpy.structure_score.{new_name}` instead.",
+        FutureWarning,
+    )
 
-        Parameters
-        ----------
-        data: pandas DataFrame object
-            dataframe object where each column represents one variable.
-            (If some values in the data are missing the data cells should be set to `numpy.NaN`.
-            Note that pandas converts each column containing `numpy.NaN`s to dtype `float`.)
 
-        state_names: dict (optional)
-            A dict indicating, for each variable, the discrete set of states (or values)
-            that the variable can take. If unspecified, the observed values in the data set
-            are taken to be the only possible states.
+class K2(_K2):
+    """Deprecated: use :class:`pgmpy.structure_score.K2` instead."""
 
-        complete_samples_only: bool (optional, default `True`)
-            Specifies how to deal with missing data, if present. If set to `True` all rows
-            that contain `np.Nan` somewhere are ignored. If `False` then, for each variable,
-            every row where neither the variable nor its parents are `np.NaN` is used.
-            This sets the behavior of the `state_count`-method.
+    def __init__(self, data: pd.DataFrame, state_names: dict | None = None, max_cache_size: int | None = 10000):
+        _warn_deprecated("K2", "K2")
+        super().__init__(data, state_names=state_names, max_cache_size=max_cache_size)
 
-        References
-        ---------
-        [1] Koller & Friedman, Probabilistic Graphical Models - Principles and Techniques, 2009
-        Section 18.3.4-18.3.6 (esp. page 806)
-        [2] AM Carvalho, Scoring functions for learning Bayesian networks,
-        http://www.lx.it.pt/~asmc/pub/talks/09-TA/ta_pres.pdf
-        """
-        super(K2Score, self).__init__(data, **kwargs)
 
-    def local_score(self, variable, parents):
-        'Computes a score that measures how much a \
-        given variable is "influenced" by a given list of potential parents.'
+class BDeu(_BDeu):
+    """Deprecated: use :class:`pgmpy.structure_score.BDeu` instead."""
 
-        var_states = self.state_names[variable]
-        var_cardinality = len(var_states)
-        state_counts = self.state_counts(variable, parents)
-        num_parents_states = float(state_counts.shape[1])
-
-        counts = np.asarray(state_counts)
-        log_gamma_counts = np.zeros_like(counts, dtype=float)
-
-        # Compute log(gamma(counts + 1))
-        gammaln(counts + 1, out=log_gamma_counts)
-
-        # Compute the log-gamma conditional sample size
-        log_gamma_conds = np.sum(counts, axis=0, dtype=float)
-        gammaln(log_gamma_conds + var_cardinality, out=log_gamma_conds)
-
-        score = (
-            np.sum(log_gamma_counts)
-            - np.sum(log_gamma_conds)
-            + num_parents_states * lgamma(var_cardinality)
+    def __init__(
+        self,
+        data: pd.DataFrame,
+        equivalent_sample_size: int = 10,
+        state_names: dict | None = None,
+        max_cache_size: int | None = 10000,
+    ):
+        _warn_deprecated("BDeu", "BDeu")
+        super().__init__(
+            data,
+            equivalent_sample_size=equivalent_sample_size,
+            state_names=state_names,
+            max_cache_size=max_cache_size,
         )
 
-        return score
 
+class BDs(_BDs):
+    """Deprecated: use :class:`pgmpy.structure_score.BDs` instead."""
 
-class BDeuScore(StructureScore):
-    def __init__(self, data, equivalent_sample_size=10, **kwargs):
-        """
-        Class for Bayesian structure scoring for BayesianNetworks with Dirichlet priors.
-        The BDeu score is the result of setting all Dirichlet hyperparameters/pseudo_counts to
-        `equivalent_sample_size/variable_cardinality`.
-        The `score`-method measures how well a model is able to describe the given data set.
-
-        Parameters
-        ----------
-        data: pandas DataFrame object
-            dataframe object where each column represents one variable.
-            (If some values in the data are missing the data cells should be set to `numpy.NaN`.
-            Note that pandas converts each column containing `numpy.NaN`s to dtype `float`.)
-
-        equivalent_sample_size: int (default: 10)
-            The equivalent/imaginary sample size (of uniform pseudo samples) for the dirichlet hyperparameters.
-            The score is sensitive to this value, runs with different values might be useful.
-
-        state_names: dict (optional)
-            A dict indicating, for each variable, the discrete set of states (or values)
-            that the variable can take. If unspecified, the observed values in the data set
-            are taken to be the only possible states.
-
-        complete_samples_only: bool (optional, default `True`)
-            Specifies how to deal with missing data, if present. If set to `True` all rows
-            that contain `np.Nan` somewhere are ignored. If `False` then, for each variable,
-            every row where neither the variable nor its parents are `np.NaN` is used.
-            This sets the behavior of the `state_count`-method.
-
-        References
-        ---------
-        [1] Koller & Friedman, Probabilistic Graphical Models - Principles and Techniques, 2009
-        Section 18.3.4-18.3.6 (esp. page 806)
-        [2] AM Carvalho, Scoring functions for learning Bayesian networks,
-        http://www.lx.it.pt/~asmc/pub/talks/09-TA/ta_pres.pdf
-        """
-        self.equivalent_sample_size = equivalent_sample_size
-        super(BDeuScore, self).__init__(data, **kwargs)
-
-    def get_number_of_parent_states(self, state_counts):
-        return float(state_counts.shape[1])
-
-    def local_score(self, variable, parents):
-        'Computes a score that measures how much a \
-        given variable is "influenced" by a given list of potential parents.'
-
-        var_states = self.state_names[variable]
-        var_cardinality = len(var_states)
-        state_counts = self.state_counts(variable, parents)
-        num_parents_states = self.get_number_of_parent_states(state_counts)
-
-        counts = np.asarray(state_counts)
-        log_gamma_counts = np.zeros_like(counts, dtype=float)
-        alpha = self.equivalent_sample_size / num_parents_states
-        beta = self.equivalent_sample_size / counts.size
-        # Compute log(gamma(counts + beta))
-        gammaln(counts + beta, out=log_gamma_counts)
-
-        # Compute the log-gamma conditional sample size
-        log_gamma_conds = np.sum(counts, axis=0, dtype=float)
-        gammaln(log_gamma_conds + alpha, out=log_gamma_conds)
-
-        score = (
-            np.sum(log_gamma_counts)
-            - np.sum(log_gamma_conds)
-            + num_parents_states * lgamma(alpha)
-            - counts.size * lgamma(beta)
+    def __init__(
+        self,
+        data: pd.DataFrame,
+        equivalent_sample_size: int = 10,
+        state_names: dict | None = None,
+        max_cache_size: int | None = 10000,
+    ):
+        _warn_deprecated("BDs", "BDs")
+        super().__init__(
+            data,
+            equivalent_sample_size=equivalent_sample_size,
+            state_names=state_names,
+            max_cache_size=max_cache_size,
         )
-        return score
 
 
-class BDsScore(BDeuScore):
-    def __init__(self, data, equivalent_sample_size=10, **kwargs):
-        """
-        Class for Bayesian structure scoring for BayesianNetworks with
-        Dirichlet priors.  The BDs score is the result of setting all Dirichlet
-        hyperparameters/pseudo_counts to
-        `equivalent_sample_size/modified_variable_cardinality` where for the
-        modified_variable_cardinality only the number of parent configurations
-        where there were observed variable counts are considered.  The
-        `score`-method measures how well a model is able to describe the given
-        data set.
+class LogLikelihood(_LogLikelihood):
+    """Deprecated: use :class:`pgmpy.structure_score.LogLikelihood` instead."""
 
-        Parameters
-        ----------
-        data: pandas DataFrame object
-            dataframe object where each column represents one variable.
-            (If some values in the data are missing the data cells should be set to `numpy.NaN`.
-            Note that pandas converts each column containing `numpy.NaN`s to dtype `float`.)
-
-        equivalent_sample_size: int (default: 10)
-            The equivalent/imaginary sample size (of uniform pseudo samples) for the dirichlet
-            hyperparameters.
-            The score is sensitive to this value, runs with different values might be useful.
-
-        state_names: dict (optional)
-            A dict indicating, for each variable, the discrete set of states (or values)
-            that the variable can take. If unspecified, the observed values in the data set
-            are taken to be the only possible states.
-
-        complete_samples_only: bool (optional, default `True`)
-            Specifies how to deal with missing data, if present. If set to `True` all rows
-            that contain `np.Nan` somewhere are ignored. If `False` then, for each variable,
-            every row where neither the variable nor its parents are `np.NaN` is used.
-            This sets the behavior of the `state_count`-method.
-
-        References
-        ---------
-        [1] Scutari, Marco. An Empirical-Bayes Score for Discrete Bayesian Networks.
-        Journal of Machine Learning Research, 2016, pp. 438–48
-
-        """
-        super(BDsScore, self).__init__(data, equivalent_sample_size, **kwargs)
-
-    def get_number_of_parent_states(self, state_counts):
-        return float(len(np.where(state_counts.sum(axis=0) > 0)[0]))
-
-    def structure_prior_ratio(self, operation):
-        """Return the log ratio of the prior probabilities for a given proposed change to
-        the DAG.
-        """
-        if operation == "+":
-            return -log(2.0)
-        if operation == "-":
-            return log(2.0)
-        return 0
-
-    def structure_prior(self, model):
-        """
-        Implements the marginal uniform prior for the graph structure where each arc
-        is independent with the probability of an arc for any two nodes in either direction
-        is 1/4 and the probability of no arc between any two nodes is 1/2."""
-        nedges = float(len(model.edges()))
-        nnodes = float(len(model.nodes()))
-        possible_edges = nnodes * (nnodes - 1) / 2.0
-        score = -(nedges + possible_edges) * log(2.0)
-        return score
+    def __init__(self, data: pd.DataFrame, state_names: dict | None = None, max_cache_size: int | None = 10000):
+        _warn_deprecated("LogLikelihood", "LogLikelihood")
+        super().__init__(data, state_names=state_names, max_cache_size=max_cache_size)
 
 
-class BicScore(StructureScore):
-    def __init__(self, data, **kwargs):
-        """
-        Class for Bayesian structure scoring for BayesianNetworks with
-        Dirichlet priors.  The BIC/MDL score ("Bayesian Information Criterion",
-        also "Minimal Descriptive Length") is a log-likelihood score with an
-        additional penalty for network complexity, to avoid overfitting.  The
-        `score`-method measures how well a model is able to describe the given
-        data set.
+# The legacy class name carried a typo; keep it importable until removal.
+LogLikeliHood = LogLikelihood
 
-        Parameters
-        ----------
-        data: pandas DataFrame object
-            dataframe object where each column represents one variable.
-            (If some values in the data are missing the data cells should be set to `numpy.NaN`.
-            Note that pandas converts each column containing `numpy.NaN`s to dtype `float`.)
 
-        state_names: dict (optional)
-            A dict indicating, for each variable, the discrete set of states (or values)
-            that the variable can take. If unspecified, the observed values in the data set
-            are taken to be the only possible states.
+class BIC(_BIC):
+    """Deprecated: use :class:`pgmpy.structure_score.BIC` instead."""
 
-        complete_samples_only: bool (optional, default `True`)
-            Specifies how to deal with missing data, if present. If set to `True` all rows
-            that contain `np.Nan` somewhere are ignored. If `False` then, for each variable,
-            every row where neither the variable nor its parents are `np.NaN` is used.
-            This sets the behavior of the `state_count`-method.
+    def __init__(self, data: pd.DataFrame, state_names: dict | None = None, max_cache_size: int | None = 10000):
+        _warn_deprecated("BIC", "BIC")
+        super().__init__(data, state_names=state_names, max_cache_size=max_cache_size)
 
-        References
-        ---------
-        [1] Koller & Friedman, Probabilistic Graphical Models - Principles and Techniques, 2009
-        Section 18.3.4-18.3.6 (esp. page 802)
-        [2] AM Carvalho, Scoring functions for learning Bayesian networks,
-        http://www.lx.it.pt/~asmc/pub/talks/09-TA/ta_pres.pdf
-        """
-        super(BicScore, self).__init__(data, **kwargs)
 
-    def local_score(self, variable, parents):
-        'Computes a score that measures how much a \
-        given variable is "influenced" by a given list of potential parents.'
+class AIC(_AIC):
+    """Deprecated: use :class:`pgmpy.structure_score.AIC` instead."""
 
-        var_states = self.state_names[variable]
-        var_cardinality = len(var_states)
-        state_counts = self.state_counts(variable, parents)
-        sample_size = len(self.data)
-        num_parents_states = float(state_counts.shape[1])
+    def __init__(self, data: pd.DataFrame, state_names: dict | None = None, max_cache_size: int | None = 10000):
+        _warn_deprecated("AIC", "AIC")
+        super().__init__(data, state_names=state_names, max_cache_size=max_cache_size)
 
-        counts = np.asarray(state_counts)
-        log_likelihoods = np.zeros_like(counts, dtype=float)
 
-        # Compute the log-counts
-        np.log(counts, out=log_likelihoods, where=counts > 0)
+class LogLikelihoodGauss(_LogLikelihoodGauss):
+    """Deprecated: use :class:`pgmpy.structure_score.LogLikelihoodGauss` instead."""
 
-        # Compute the log-conditional sample size
-        log_conditionals = np.sum(counts, axis=0, dtype=float)
-        np.log(log_conditionals, out=log_conditionals, where=log_conditionals > 0)
+    def __init__(self, data: pd.DataFrame, state_names: dict | None = None, max_cache_size: int | None = 10000):
+        _warn_deprecated("LogLikelihoodGauss", "LogLikelihoodGauss")
+        super().__init__(data, state_names=state_names, max_cache_size=max_cache_size)
 
-        # Compute the log-likelihoods
-        log_likelihoods -= log_conditionals
-        log_likelihoods *= counts
 
-        score = np.sum(log_likelihoods)
-        score -= 0.5 * log(sample_size) * num_parents_states * (var_cardinality - 1)
+class BICGauss(_BICGauss):
+    """Deprecated: use :class:`pgmpy.structure_score.BICGauss` instead."""
 
-        return score
+    def __init__(self, data: pd.DataFrame, state_names: dict | None = None, max_cache_size: int | None = 10000):
+        _warn_deprecated("BICGauss", "BICGauss")
+        super().__init__(data, state_names=state_names, max_cache_size=max_cache_size)
+
+
+class AICGauss(_AICGauss):
+    """Deprecated: use :class:`pgmpy.structure_score.AICGauss` instead."""
+
+    def __init__(self, data: pd.DataFrame, state_names: dict | None = None, max_cache_size: int | None = 10000):
+        _warn_deprecated("AICGauss", "AICGauss")
+        super().__init__(data, state_names=state_names, max_cache_size=max_cache_size)
+
+
+class LogLikelihoodCondGauss(_LogLikelihoodCondGauss):
+    """Deprecated: use :class:`pgmpy.structure_score.LogLikelihoodCondGauss` instead."""
+
+    def __init__(self, data: pd.DataFrame, state_names: dict | None = None, max_cache_size: int | None = 10000):
+        _warn_deprecated("LogLikelihoodCondGauss", "LogLikelihoodCondGauss")
+        super().__init__(data, state_names=state_names, max_cache_size=max_cache_size)
+
+
+class BICCondGauss(_BICCondGauss):
+    """Deprecated: use :class:`pgmpy.structure_score.BICCondGauss` instead."""
+
+    def __init__(self, data: pd.DataFrame, state_names: dict | None = None, max_cache_size: int | None = 10000):
+        _warn_deprecated("BICCondGauss", "BICCondGauss")
+        super().__init__(data, state_names=state_names, max_cache_size=max_cache_size)
+
+
+class AICCondGauss(_AICCondGauss):
+    """Deprecated: use :class:`pgmpy.structure_score.AICCondGauss` instead."""
+
+    def __init__(self, data: pd.DataFrame, state_names: dict | None = None, max_cache_size: int | None = 10000):
+        _warn_deprecated("AICCondGauss", "AICCondGauss")
+        super().__init__(data, state_names=state_names, max_cache_size=max_cache_size)
+
+
+def get_scoring_method(
+    scoring_method: str | BaseStructureScore | None,
+    data: pd.DataFrame,
+    use_cache: bool,
+    **kwargs,
+) -> tuple[BaseStructureScore, BaseStructureScore]:
+    """Deprecated: use :func:`pgmpy.structure_score.get_scoring_method` instead.
+
+    Legacy adapter preserving the old ``(score, cached_score)`` tuple contract.
+    Canonical scores cache internally (see ``max_cache_size``), so both tuple
+    elements refer to the same instance.
+    """
+    _warn_deprecated("get_scoring_method", "get_scoring_method")
+    score = _get_scoring_method(scoring_method, data)
+    if kwargs and isinstance(scoring_method, str):
+        # The legacy API forwarded extra kwargs to the score constructor.
+        score = type(score)(data, **kwargs)
+    return score, score

@@ -1,46 +1,42 @@
-#!/usr/bin/env python
-from pgmpy.utils.mathext import powerset
+import networkx as nx
+
 from pgmpy.base import UndirectedGraph
-from pgmpy.models import BayesianNetwork
-from pgmpy.estimators import StructureEstimator, HillClimbSearch, BDeuScore
-from pgmpy.independencies import Independencies, IndependenceAssertion
-from pgmpy.estimators.CITests import chi_square
+from pgmpy.causal_discovery import ExpertKnowledge, HillClimbSearch
+from pgmpy.ci_tests import ChiSquare
+from pgmpy.estimators import StructureEstimator
+from pgmpy.structure_score import BDeu
+from pgmpy.utils.mathext import powerset
 
 
 class MmhcEstimator(StructureEstimator):
+    """
+    Implements the MMHC hybrid structure estimation procedure for
+    learning BayesianNetworks from discrete data.
+
+    Parameters
+    ----------
+    data: pandas DataFrame object
+        dataframe object where each column represents one variable.
+        (If some values in the data are missing the data cells should be set to `numpy.nan`.
+        Note that pandas converts each column containing `numpy.nan`s to dtype `float`.)
+
+    state_names: dict (optional)
+        A dict indicating, for each variable, the discrete set of states (or values)
+        that the variable can take. If unspecified, the observed values in the data set
+        are taken to be the only possible states.
+
+    References
+    ----------
+    Tsamardinos et al., The max-min hill-climbing Bayesian network structure learning algorithm (2005)
+    http://www.dsl-lab.org/supplements/mmhc_paper/paper_online.pdf
+    """
+
     def __init__(self, data, **kwargs):
-        """
-        Implements the MMHC hybrid structure estimation procedure for
-        learning BayesianNetworks from discrete data.
-
-        Parameters
-        ----------
-        data: pandas DataFrame object
-            dataframe object where each column represents one variable.
-            (If some values in the data are missing the data cells should be set to `numpy.NaN`.
-            Note that pandas converts each column containing `numpy.NaN`s to dtype `float`.)
-
-        state_names: dict (optional)
-            A dict indicating, for each variable, the discrete set of states (or values)
-            that the variable can take. If unspecified, the observed values in the data set
-            are taken to be the only possible states.
-
-        complete_samples_only: bool (optional, default `True`)
-            Specifies how to deal with missing data, if present. If set to `True` all rows
-            that contain `np.Nan` somewhere are ignored. If `False` then, for each variable,
-            every row where neither the variable nor its parents are `np.NaN` is used.
-            This sets the behavior of the `state_count`-method.
-
-        References
-        ----------
-        Tsamardinos et al., The max-min hill-climbing Bayesian network structure learning algorithm (2005)
-        http://www.dsl-lab.org/supplements/mmhc_paper/paper_online.pdf
-        """
-        super(MmhcEstimator, self).__init__(data, **kwargs)
+        super().__init__(data, **kwargs)
 
     def estimate(self, scoring_method=None, tabu_length=10, significance_level=0.01):
         """
-        Estimates a BayesianNetwork for the data set, using MMHC. First estimates a
+        Estimates a DiscreteBayesianNetwork for the data set, using MMHC. First estimates a
         graph skeleton using MMPC and then orients the edges using score-based local
         search (hill climbing).
 
@@ -49,7 +45,7 @@ class MmhcEstimator(StructureEstimator):
         significance_level: float, default: 0.01
             The significance level to use for conditional independence tests in the data set. See `mmpc`-method.
 
-        scoring_method: instance of a Scoring method (default: BDeuScore)
+        scoring_method: instance of a Scoring method (default: BDeu)
             The method to use for scoring during Hill Climb Search. Can be an instance of any of the
             scoring methods implemented in pgmpy.
 
@@ -74,27 +70,33 @@ class MmhcEstimator(StructureEstimator):
         >>> import pandas as pd
         >>> import numpy as np
         >>> from pgmpy.estimators import MmhcEstimator
-        >>> data = pd.DataFrame(np.random.randint(0, 2, size=(2500, 4)), columns=list('XYZW'))
-        >>> data['sum'] = data.sum(axis=1)
+        >>> rng = np.random.default_rng(42)
+        >>> data = pd.DataFrame(
+        ...     rng.integers(0, 2, size=(2500, 4)), columns=list("XYZW")
+        ... )
+        >>> data["sum"] = data.sum(axis=1)
         >>> est = MmhcEstimator(data)
         >>> model = est.estimate()
-        >>> print(model.edges())
-        [('Z', 'sum'), ('X', 'sum'), ('W', 'sum'), ('Y', 'sum')]
+        >>> print(model.edges())  # doctest: +NORMALIZE_WHITESPACE
+        [('X', 'sum'), ('Y', 'sum'), ('Z', 'sum'), ('W', 'sum')]
         """
         if scoring_method is None:
-            scoring_method = BDeuScore(self.data, equivalent_sample_size=10)
+            scoring_method = BDeu(self.data, equivalent_sample_size=10)
 
         skel = self.mmpc(significance_level)
 
-        hc = HillClimbSearch(self.data)
+        possible_edges = nx.complete_graph(n=self.state_names.keys(), create_using=nx.Graph).edges()
 
-        model = hc.estimate(
+        expert_knowledge = ExpertKnowledge(forbidden_edges=possible_edges - skel.to_directed().edges())
+
+        hc = HillClimbSearch(
             scoring_method=scoring_method,
-            white_list=skel.to_directed().edges(),
+            expert_knowledge=expert_knowledge,
             tabu_length=tabu_length,
+            return_type="dag",
         )
 
-        return model
+        return hc.fit(self.data).causal_graph_
 
     def mmpc(self, significance_level=0.01):
         """Estimates a graph skeleton (UndirectedGraph) for the data set, using then
@@ -131,36 +133,32 @@ class MmhcEstimator(StructureEstimator):
         >>> import pandas as pd
         >>> import numpy as np
         >>> from pgmpy.estimators import MmhcEstimator
-        >>> data = pd.DataFrame(np.random.randint(0, 2, size=(5000, 5)), columns=list('ABCDE'))
-        >>> data['F'] = data['A'] + data['B'] + data ['C']
-        >>> est = PC(data)
-        >>> skel, sep_sets = est.estimate_skeleton()
-        >>> skel.edges()
-        [('A', 'F'), ('B', 'F'), ('C', 'F')]
-        >>> # all independencies are unconditional:
-        >>> sep_sets
-        {('D', 'A'): (), ('C', 'A'): (), ('C', 'E'): (), ('E', 'F'): (), ('B', 'D'): (),
-         ('B', 'E'): (), ('D', 'F'): (), ('D', 'E'): (), ('A', 'E'): (), ('B', 'A'): (),
-         ('B', 'C'): (), ('C', 'D'): ()}
-        >>> data = pd.DataFrame(np.random.randint(0, 2, size=(5000, 3)), columns=list('XYZ'))
-        >>> data['X'] += data['Z']
-        >>> data['Y'] += data['Z']
-        >>> est = PC(data)
-        >>> skel, sep_sets = est.estimate_skeleton()
-        >>> skel.edges()
+        >>> rng = np.random.default_rng(42)
+        >>> data = pd.DataFrame(
+        ...     rng.integers(0, 2, size=(5000, 5)), columns=list("ABCDE")
+        ... )
+        >>> data["F"] = data["A"] + data["B"] + data["C"]
+        >>> est = MmhcEstimator(data)
+        >>> skel = est.mmpc()
+        >>> sorted(skel.edges())
+        [('A', 'D'), ('A', 'E'), ('A', 'F'), ('B', 'E'), ('B', 'F'), ('C', 'E'), ('C', 'F')]
+        >>> data = pd.DataFrame(rng.integers(0, 2, size=(5000, 3)), columns=list("XYZ"))
+        >>> data["X"] += data["Z"]
+        >>> data["Y"] += data["Z"]
+        >>> est = MmhcEstimator(data)
+        >>> skel = est.mmpc()
+        >>> sorted(skel.edges())
         [('X', 'Z'), ('Y', 'Z')]
-        >>> # X, Y dependent, but conditionally independent given Z:
-        >>> sep_sets
-        {('X', 'Y'): ('Z',)}
         """
 
         nodes = self.state_names.keys()
+        ci_test = ChiSquare(self.data)
 
         def assoc(X, Y, Zs):
             """Measure for (conditional) association between variables. Use negative
             p-value of independence test.
             """
-            return 1 - chi_square(X, Y, Zs, self.data, boolean=False)[1]
+            return 1 - ci_test.run_test(X, Y, list(Zs))[1]
 
         def min_assoc(X, Y, Zs):
             "Minimal association of X, Y given any subset of Zs."
@@ -186,9 +184,7 @@ class MmhcEstimator(StructureEstimator):
 
             # Forward Phase
             while True:
-                new_neighbor, new_neighbor_min_assoc = max_min_heuristic(
-                    node, neighbors[node]
-                )
+                new_neighbor, new_neighbor_min_assoc = max_min_heuristic(node, neighbors[node])
                 if new_neighbor_min_assoc > 0:
                     neighbors[node].append(new_neighbor)
                 else:
@@ -198,11 +194,10 @@ class MmhcEstimator(StructureEstimator):
             for neigh in neighbors[node]:
                 other_neighbors = [n for n in neighbors[node] if n != neigh]
                 for sep_set in powerset(other_neighbors):
-                    if chi_square(
+                    if ci_test.is_independent(
                         X=node,
                         Y=neigh,
-                        Z=sep_set,
-                        data=self.data,
+                        Z=list(sep_set),
                         significance_level=significance_level,
                     ):
                         neighbors[node].remove(neigh)

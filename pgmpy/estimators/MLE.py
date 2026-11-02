@@ -1,70 +1,104 @@
-# coding:utf-8
-
+from collections.abc import Hashable
 from itertools import chain
 
-import numpy as np
+import pandas as pd
 from joblib import Parallel, delayed
 
+from pgmpy.base import DAG
 from pgmpy.estimators import ParameterEstimator
+from pgmpy.factors import FactorDict
 from pgmpy.factors.discrete import TabularCPD
-from pgmpy.models import BayesianNetwork
+from pgmpy.models import DiscreteBayesianNetwork, JunctionTree
+from pgmpy.parameter_estimator import DiscreteMLE
+from pgmpy.utils._warnings import _warn_external
 
 
 class MaximumLikelihoodEstimator(ParameterEstimator):
-    def __init__(self, model, data, **kwargs):
-        """
-        Class used to compute parameters for a model using Maximum Likelihood Estimation.
+    """
+    Deprecated: use :class:`pgmpy.parameter_estimator.DiscreteMLE` instead.
 
-        Parameters
-        ----------
-        model: A pgmpy.models.BayesianNetwork instance
+    Class used to compute parameters for a model using Maximum Likelihood Estimation.
 
-        data: pandas DataFrame object
-            DataFrame object with column names identical to the variable names of the network.
-            (If some values in the data are missing the data cells should be set to `numpy.NaN`.
-            Note that pandas converts each column containing `numpy.NaN`s to dtype `float`.)
+    Parameters
+    ----------
+    model: A pgmpy.models.DiscreteBayesianNetwork or pgmpy.models.JunctionTree instance
 
-        state_names: dict (optional)
-            A dict indicating, for each variable, the discrete set of states
-            that the variable can take. If unspecified, the observed values
-            in the data set are taken to be the only possible states.
+    data: pandas DataFrame object
+        DataFrame object with column names identical to the variable names of the network.
+        (If some values in the data are missing the data cells should be set to `numpy.nan`.
+        Note that pandas converts each column containing `numpy.nan`s to dtype `float`.)
 
-        complete_samples_only: bool (optional, default `True`)
-            Specifies how to deal with missing data, if present. If set to `True` all rows
-            that contain `np.NaN` somewhere are ignored. If `False` then, for each variable,
-            every row where neither the variable nor its parents are `np.NaN` is used.
+    state_names: dict (optional)
+        A dict indicating, for each variable, the discrete set of states
+        that the variable can take. If unspecified, the observed values
+        in the data set are taken to be the only possible states.
 
-        Examples
-        --------
-        >>> import numpy as np
-        >>> import pandas as pd
-        >>> from pgmpy.models import BayesianNetwork
-        >>> from pgmpy.estimators import MaximumLikelihoodEstimator
-        >>> data = pd.DataFrame(np.random.randint(low=0, high=2, size=(1000, 5)),
-        ...                       columns=['A', 'B', 'C', 'D', 'E'])
-        >>> model = BayesianNetwork([('A', 'B'), ('C', 'B'), ('C', 'D'), ('B', 'E')])
-        >>> estimator = MaximumLikelihoodEstimator(model, data)
-        """
-        if not isinstance(model, BayesianNetwork):
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> from pgmpy.models import DiscreteBayesianNetwork
+    >>> from pgmpy.estimators import MaximumLikelihoodEstimator
+    >>> data = pd.DataFrame(
+    ...     np.random.randint(low=0, high=2, size=(1000, 5)),
+    ...     columns=["A", "B", "C", "D", "E"],
+    ... )
+    >>> model = DiscreteBayesianNetwork(
+    ...     [("A", "B"), ("C", "B"), ("C", "D"), ("B", "E")]
+    ... )
+    >>> estimator = MaximumLikelihoodEstimator(model, data)
+    """
+
+    def __init__(
+        self,
+        model: DiscreteBayesianNetwork | JunctionTree | DAG,
+        data: pd.DataFrame,
+        **kwargs,
+    ) -> None:
+        _warn_external(
+            "`pgmpy.estimators.MaximumLikelihoodEstimator` is deprecated since v1.1.1 and will be removed in v2.0. "
+            "Use `pgmpy.parameter_estimator.DiscreteMLE` instead.",
+            FutureWarning,
+        )
+
+        if not isinstance(model, (DiscreteBayesianNetwork, JunctionTree, DAG)):
             raise NotImplementedError(
-                "Maximum Likelihood Estimate is only implemented for BayesianNetwork"
-            )
-        elif set(model.nodes()) > set(data.columns):
-            raise ValueError(
-                f"Maximum Likelihood Estimator works only for models with all observed variables. Found latent variables: {model.latents}."
+                "Maximum Likelihood Estimate is only implemented for DiscreteBayesianNetwork, JunctionTree, and DAG"
             )
 
-        super(MaximumLikelihoodEstimator, self).__init__(model, data, **kwargs)
+        if isinstance(model, (DAG, DiscreteBayesianNetwork)):
+            if len(model.latents) > 0:
+                raise ValueError(
+                    f"Found latent variables: {model.latents}. "
+                    "Maximum Likelihood doesn't support latent variables, please use ExpectationMaximization."
+                )
 
-    def get_parameters(self, n_jobs=-1, weighted=False):
+            elif set(model.nodes()) > set(data.columns):
+                raise ValueError(
+                    f"Nodes detected in the model that are not present "
+                    f"in the dataset: {set(model.nodes) - set(data.columns)}. "
+                    "Refine the model so that all parameters can be estimated from the data."
+                )
+
+            if isinstance(model, JunctionTree):
+                if len(set(data.columns) - set(chain(*model.nodes()))) != 0:
+                    raise ValueError(
+                        f"Nodes detected in the JunctionTree that are not present "
+                        f"in the dataset: {set(data.columns) - set(chain(*model.nodes()))} "
+                        "Refine the model to ensure all parameters can be estimated."
+                    )
+
+        super().__init__(model, data, **kwargs)
+
+    def get_parameters(self, n_jobs: int = 1, weighted: bool = False) -> list[TabularCPD] | FactorDict:
         """
-        Method to estimate the model parameters (CPDs) using Maximum Likelihood
-        Estimation.
+        Method to estimate the model parameters using Maximum Likelihood Estimation.
 
         Parameters
         ----------
-        n_jobs: int (default: -1)
-            Number of jobs to run in parallel. Default: -1 uses all the processors.
+        n_jobs: int (default: 1)
+            Number of jobs to run in parallel. Default: 1 uses all the processors.
+            Using n_jobs > 1 for small models might be slower.
 
         weighted: bool
             If weighted=True, the data must contain a `_weight` column specifying the
@@ -73,33 +107,43 @@ class MaximumLikelihoodEstimator(ParameterEstimator):
 
         Returns
         -------
-        Estimated parameters: list
+        Estimated parameters: list or pgmpy.factors.FactorDict
             List of pgmpy.factors.discrete.TabularCPDs, one for each variable of the model
+            Or a FactorDict representing potential values of a Junction Tree
 
         Examples
         --------
         >>> import numpy as np
         >>> import pandas as pd
-        >>> from pgmpy.models import BayesianNetwork
+        >>> from pgmpy.models import DiscreteBayesianNetwork
         >>> from pgmpy.estimators import MaximumLikelihoodEstimator
-        >>> values = pd.DataFrame(np.random.randint(low=0, high=2, size=(1000, 4)),
-        ...                       columns=['A', 'B', 'C', 'D'])
-        >>> model = BayesianNetwork([('A', 'B'), ('C', 'B'), ('C', 'D')])
+        >>> np.random.seed(42)
+        >>> values = pd.DataFrame(
+        ...     np.random.randint(low=0, high=2, size=(1000, 4)),
+        ...     columns=["A", "B", "C", "D"],
+        ... )
+        >>> model = DiscreteBayesianNetwork([("A", "B"), ("C", "B"), ("C", "D")])
         >>> estimator = MaximumLikelihoodEstimator(model, values)
-        >>> estimator.get_parameters()
-        [<TabularCPD representing P(C:2) at 0x7f7b534251d0>,
-        <TabularCPD representing P(B:2 | C:2, A:2) at 0x7f7b4dfd4da0>,
-        <TabularCPD representing P(A:2) at 0x7f7b4dfd4fd0>,
-        <TabularCPD representing P(D:2 | C:2) at 0x7f7b4df822b0>]
+        >>> estimator.get_parameters()  # doctest: +ELLIPSIS +NORMALIZE_WHITESPACE
+        [<TabularCPD representing P(A:2) at 0x...>,
+        <TabularCPD representing P(B:2 | A:2, C:2) at 0x...>,
+        <TabularCPD representing P(C:2) at 0x...>,
+        <TabularCPD representing P(D:2 | C:2) at 0x...>]
         """
 
-        parameters = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(self.estimate_cpd)(node, weighted) for node in self.model.nodes()
-        )
+        if isinstance(self.model, JunctionTree):
+            return self.estimate_potentials()
+
+        parameters = Parallel(n_jobs=n_jobs)(delayed(self.estimate_cpd)(node, weighted) for node in self.model.nodes())
+        # TODO: A hacky solution to return correct value for the chosen backend. Ref #1675
+        parameters = [p.copy() for p in parameters]
 
         return parameters
 
-    def estimate_cpd(self, node, weighted=False):
+    def _sample_weight(self, weighted: bool):
+        return self.data["_weight"] if weighted else None
+
+    def estimate_cpd(self, node: Hashable, weighted: bool = False) -> TabularCPD:
         """
         Method to estimate the CPD for a given variable.
 
@@ -121,57 +165,128 @@ class MaximumLikelihoodEstimator(ParameterEstimator):
         Examples
         --------
         >>> import pandas as pd
-        >>> from pgmpy.models import BayesianNetwork
+        >>> from pgmpy.models import DiscreteBayesianNetwork
         >>> from pgmpy.estimators import MaximumLikelihoodEstimator
-        >>> data = pd.DataFrame(data={'A': [0, 0, 1], 'B': [0, 1, 0], 'C': [1, 1, 0]})
-        >>> model = BayesianNetwork([('A', 'C'), ('B', 'C')])
-        >>> cpd_A = MaximumLikelihoodEstimator(model, data).estimate_cpd('A')
+        >>> data = pd.DataFrame(data={"A": [0, 0, 1], "B": [0, 1, 0], "C": [1, 1, 0]})
+        >>> model = DiscreteBayesianNetwork([("A", "C"), ("B", "C")])
+        >>> cpd_A = MaximumLikelihoodEstimator(model, data).estimate_cpd(node="A")
         >>> print(cpd_A)
-        ╒══════╤══════════╕
-        │ A(0) │ 0.666667 │
-        ├──────┼──────────┤
-        │ A(1) │ 0.333333 │
-        ╘══════╧══════════╛
-        >>> cpd_C = MaximumLikelihoodEstimator(model, data).estimate_cpd('C')
+        +------+----------+
+        | A(0) | 0.666667 |
+        +------+----------+
+        | A(1) | 0.333333 |
+        +------+----------+
+        >>> cpd_C = MaximumLikelihoodEstimator(model, data).estimate_cpd("C")
         >>> print(cpd_C)
-        ╒══════╤══════╤══════╤══════╤══════╕
-        │ A    │ A(0) │ A(0) │ A(1) │ A(1) │
-        ├──────┼──────┼──────┼──────┼──────┤
-        │ B    │ B(0) │ B(1) │ B(0) │ B(1) │
-        ├──────┼──────┼──────┼──────┼──────┤
-        │ C(0) │ 0.0  │ 0.0  │ 1.0  │ 0.5  │
-        ├──────┼──────┼──────┼──────┼──────┤
-        │ C(1) │ 1.0  │ 1.0  │ 0.0  │ 0.5  │
-        ╘══════╧══════╧══════╧══════╧══════╛
+        +------+------+------+------+------+
+        | A    | A(0) | A(0) | A(1) | A(1) |
+        +------+------+------+------+------+
+        | B    | B(0) | B(1) | B(0) | B(1) |
+        +------+------+------+------+------+
+        | C(0) | 0.0  | 0.0  | 1.0  | 0.5  |
+        +------+------+------+------+------+
+        | C(1) | 1.0  | 1.0  | 0.0  | 0.5  |
+        +------+------+------+------+------+
         """
-
-        state_counts = self.state_counts(node, weighted=weighted)
-
-        # if a column contains only `0`s (no states observed for some configuration
-        # of parents' states) fill that column uniformly instead
-        state_counts.values[:, (state_counts.values == 0).all(axis=0)] = 1
-
-        parents = sorted(self.model.get_parents(node))
-        parents_cardinalities = [len(self.state_names[parent]) for parent in parents]
-        node_cardinality = len(self.state_names[node])
-
-        # Get the state names for the CPD
-        state_names = {node: list(state_counts.index)}
-        if parents:
-            state_names.update(
-                {
-                    state_counts.columns.names[i]: list(state_counts.columns.levels[i])
-                    for i in range(len(parents))
-                }
-            )
-
-        cpd = TabularCPD(
-            node,
-            node_cardinality,
-            np.array(state_counts),
-            evidence=parents,
-            evidence_card=parents_cardinalities,
-            state_names={var: self.state_names[var] for var in chain([node], parents)},
+        return DiscreteMLE._estimate_cpd(
+            model=self.model,
+            data=self.data,
+            state_names=self.state_names,
+            node=node,
+            sample_weight=self._sample_weight(weighted),
         )
-        cpd.normalize()
-        return cpd
+
+    def estimate_potentials(self) -> FactorDict:
+        """
+        Implements Iterative Proportional Fitting to estimate potentials specifically
+        for a Decomposable Undirected Graphical Model. Decomposability is enforced
+        by using a Junction Tree.
+
+        Returns
+        -------
+        Estimated potentials: pgmpy.factors.FactorDict
+            Estimated potentials for the entire graphical model.
+
+        References
+        ----------
+        - :footcite:t:`murphy_2012` (Algorithm 19.2 IPF; Section 19.5.7.4).
+        - :footcite:t:`xing_2014_lectures`
+
+        Examples
+        --------
+        >>> import pandas as pd
+        >>> from pgmpy.models import JunctionTree
+        >>> from pgmpy.estimators import MaximumLikelihoodEstimator
+        >>> from pgmpy.factors.discrete import DiscreteFactor
+        >>> data = pd.DataFrame(data={"A": [0, 0, 1], "B": [0, 1, 0], "C": [1, 1, 0]})
+        >>> model = JunctionTree()
+        >>> model.add_edges_from(ebunch=[(("A", "C"), ("B", "C"))])
+        >>> factor1 = DiscreteFactor(
+        ...     variables=["A", "C"], cardinality=[2, 2], values=[0.5, 0.5, 0.5, 0.5]
+        ... )
+        >>> factor2 = DiscreteFactor(
+        ...     variables=["B", "C"], cardinality=[2, 2], values=[0.5, 0.5, 0.5, 0.5]
+        ... )
+        >>> model.add_factors(factor1, factor2)
+        >>> potentials = MaximumLikelihoodEstimator(model, data).estimate_potentials()
+        >>> print(potentials[("A", "C")])
+        +------+------+------------+
+        | A    | C    |   phi(A,C) |
+        +======+======+============+
+        | A(0) | C(0) |     0.0000 |
+        +------+------+------------+
+        | A(0) | C(1) |     0.6667 |
+        +------+------+------------+
+        | A(1) | C(0) |     0.3333 |
+        +------+------+------------+
+        | A(1) | C(1) |     0.0000 |
+        +------+------+------------+
+        >>> print(potentials[("B", "C")])
+        +------+------+------------+
+        | B    | C    |   phi(B,C) |
+        +======+======+============+
+        | B(0) | C(0) |     1.0000 |
+        +------+------+------------+
+        | B(0) | C(1) |     0.5000 |
+        +------+------+------------+
+        | B(1) | C(0) |     0.0000 |
+        +------+------+------------+
+        | B(1) | C(1) |     0.5000 |
+        +------+------+------------+
+        """
+        if not isinstance(self.model, JunctionTree):
+            raise NotImplementedError("Iterative Proportional Fitting is only implemented for Junction Trees.")
+
+        if not hasattr(self.model, "clique_beliefs"):
+            raise NotImplementedError("A model containing clique beliefs is required to estimate parameters.")
+
+        clique_beliefs = self.model.clique_beliefs
+
+        if not isinstance(clique_beliefs, FactorDict):
+            raise TypeError("`UndirectedMaximumLikelihoodEstimator.model.clique_beliefs` must be a `FactorDict`.")
+
+        # These are the variables as represented by the `JunctionTree`.
+        cliques = list(clique_beliefs.keys())
+        empirical_marginals = FactorDict.from_dataframe(df=self.data, marginals=cliques)
+        potentials = FactorDict({})
+        seen = set()
+
+        # ML Machine Learning - A Probabilistic Perspective
+        # Chapter 19, Algorithm 19.2, Page 682:
+        # Update each clique by multiplying the potential value by
+        # the ratio of the empirical counts over expected counts.
+        # Since the potential values are equal to the expected counts
+        # for a JunctionTree, we can simplify this to just the empirical counts.
+        # This is also described in section 19.5.7.4.
+        for clique in cliques:
+            # Calculate the running sepset between the new clique and all of the
+            # variables we have previously seen.
+            variables = tuple(set(clique) - seen)
+            seen.update(clique)
+            potentials[clique] = empirical_marginals[clique]
+
+            # Divide out the sepset.
+            if variables:
+                marginalized = empirical_marginals[clique].marginalize(variables=variables, inplace=False)
+                potentials[clique] = potentials[clique] / marginalized
+        return potentials

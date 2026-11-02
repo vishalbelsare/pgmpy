@@ -1,71 +1,52 @@
 #!/usr/bin/env python
-from functools import lru_cache
 
-import pandas as pd
+from collections import defaultdict
 
-from pgmpy.utils.decorators import convert_args_tuple
+import numpy as np
+
+from pgmpy.factors import FactorDict
+from pgmpy.factors.discrete import DiscreteFactor
+from pgmpy.inference.ExactInference import BeliefPropagation
+from pgmpy.utils import build_state_names, get_state_counts, preprocess_data
 
 
-class BaseEstimator(object):
-    def __init__(self, data=None, state_names=None, complete_samples_only=True):
-        """
-        Base class for estimators in pgmpy; `ParameterEstimator`,
-        `StructureEstimator` and `StructureScore` derive from this class.
+class BaseEstimator:
+    """
+    Base class for estimators in pgmpy; `ParameterEstimator`,
+    `StructureEstimator` and `StructureScore` derive from this class.
 
-        Parameters
-        ----------
-        data: pandas DataFrame object
-            object where each column represents one variable.
-            (If some values in the data are missing the data cells should be set to `numpy.NaN`.
-            Note that pandas converts each column containing `numpy.NaN`s to dtype `float`.)
+    Parameters
+    ----------
+    data: pandas DataFrame object
+        object where each column represents one variable.
+        (If some values in the data are missing the data cells should be set to `numpy.nan`.
+        Note that pandas converts each column containing `numpy.nan`s to dtype `float`.)
 
-        state_names: dict (optional)
-            A dict indicating, for each variable, the discrete set of states (or values)
-            that the variable can take. If unspecified, the observed values in the data set
-            are taken to be the only possible states.
+    state_names: dict (optional)
+        A dict indicating, for each variable, the discrete set of states (or values)
+        that the variable can take. If unspecified, the observed values in the data set
+        are taken to be the only possible states.
+    """
 
-        complete_samples_only: bool (optional, default `True`)
-            Specifies how to deal with missing data, if present. If set to `True` all rows
-            that contain `np.Nan` somewhere are ignored. If `False` then, for each variable,
-            every row where neither the variable nor its parents are `np.NaN` is used.
-            This sets the behavior of the `state_count`-method.
-        """
+    def __init__(self, data=None, state_names=None):
+        if data is None:
+            self.data = None
+            self.dtypes = None
+        else:
+            self.data, self.dtypes = preprocess_data(data)
 
-        self.data = data
         # data can be None in the case when learning structure from
         # independence conditions. Look into PC.py.
         if self.data is not None:
-            self.complete_samples_only = complete_samples_only
+            self.variables = list(self.data.columns.values)
+            self.state_names = build_state_names(self.data, state_names=state_names)
 
-            self.variables = list(data.columns.values)
-
-            if not isinstance(state_names, dict):
-                self.state_names = {
-                    var: self._collect_state_names(var) for var in self.variables
-                }
-            else:
-                self.state_names = dict()
-                for var in self.variables:
-                    if var in state_names:
-                        if not set(self._collect_state_names(var)) <= set(
-                            state_names[var]
-                        ):
-                            raise ValueError(
-                                f"Data contains unexpected states for variable: {var}."
-                            )
-                        self.state_names[var] = state_names[var]
-                    else:
-                        self.state_names[var] = self._collect_state_names(var)
-
-    def _collect_state_names(self, variable):
-        "Return a list of states that the variable takes in the data."
-        states = sorted(list(self.data.loc[:, variable].dropna().unique()))
-        return states
-
-    @convert_args_tuple
-    @lru_cache(maxsize=2048)
     def state_counts(
-        self, variable, parents=[], complete_samples_only=None, weighted=False
+        self,
+        variable,
+        parents=[],
+        weighted=False,
+        reindex=True,
     ):
         """
         Return counts how often each state of 'variable' occurred in the data.
@@ -81,15 +62,14 @@ class BaseEstimator(object):
             Optional list of variable parents, if conditional counting is desired.
             Order of parents in list is reflected in the returned DataFrame
 
-        complete_samples_only: bool
-            Specifies how to deal with missing data, if present. If set to `True` all rows
-            that contain `np.NaN` somewhere are ignored. If `False` then
-            every row where neither the variable nor its parents are `np.NaN` is used.
-            Desired default behavior can be passed to the class constructor.
-
         weighted: bool
             If True, data must have a `_weight` column specifying the weight of the
             datapoint (row). If False, each datapoint has a weight of `1`.
+
+        reindex: bool
+            If True, returns a data frame with all possible parents state combinations
+            as the columns. If False, drops the state combinations which are not
+            present in the data.
 
         Returns
         -------
@@ -100,99 +80,74 @@ class BaseEstimator(object):
         --------
         >>> import pandas as pd
         >>> from pgmpy.estimators import BaseEstimator
-        >>> data = pd.DataFrame(data={'A': ['a1', 'a1', 'a2'],
-                                      'B': ['b1', 'b2', 'b1'],
-                                      'C': ['c1', 'c1', 'c2']})
+        >>> data = pd.DataFrame(
+        ...     data={
+        ...         "A": ["a1", "a1", "a2"],
+        ...         "B": ["b1", "b2", "b1"],
+        ...         "C": ["c1", "c1", "c2"],
+        ...     }
+        ... )
         >>> estimator = BaseEstimator(data)
-        >>> estimator.state_counts('A')
-            A
-        a1  2
-        a2  1
-        >>> estimator.state_counts('C', parents=['A', 'B'])
-        A  a1      a2
-        B  b1  b2  b1  b2
-        C
-        c1  1   1   0   0
-        c2  0   0   1   0
-        >>> estimator.state_counts('C', parents=['A'])
-        A    a1   a2
-        C
-        c1  2.0  0.0
-        c2  0.0  1.0
+        >>> estimator.state_counts(variable="A").values
+        array([[2],
+               [1]])
+        >>> estimator.state_counts(variable="C", parents=["A", "B"]).values
+        array([[1., 1., 0., 0.],
+               [0., 0., 1., 0.]])
         """
-        parents = list(parents)
-
-        # default for how to deal with missing data can be set in class constructor
-        if complete_samples_only is None:
-            complete_samples_only = self.complete_samples_only
-        # ignores either any row containing NaN, or only those where the variable or its parents is NaN
-        data = (
-            self.data.dropna()
-            if complete_samples_only
-            else self.data.dropna(subset=[variable] + parents)
-        )
-
-        if weighted and ("_weight" not in self.data.columns):
-            raise ValueError("data must contain a `_weight` column if weighted=True")
-
-        if not parents:
-            # count how often each state of 'variable' occurred
-            if weighted:
-                state_count_data = data.groupby([variable]).sum()["_weight"]
-            else:
-                state_count_data = data.loc[:, variable].value_counts()
-
-            state_counts = (
-                state_count_data.reindex(self.state_names[variable])
-                .fillna(0)
-                .to_frame()
+        if weighted:
+            if "_weight" not in self.data.columns:
+                raise ValueError("data must contain a `_weight` column if weighted=True")
+            return get_state_counts(
+                data=self.data.drop(columns="_weight"),
+                state_names=self.state_names,
+                variable=variable,
+                parents=parents,
+                sample_weight=self.data["_weight"].to_numpy(),
+                reindex=reindex,
             )
-
-        else:
-            parents_states = [self.state_names[parent] for parent in parents]
-            # count how often each state of 'variable' occurred, conditional on parents' states
-            if weighted:
-                state_count_data = (
-                    data.groupby([variable] + parents).sum()["_weight"].unstack(parents)
-                )
-
-            else:
-                state_count_data = (
-                    data.groupby([variable] + parents).size().unstack(parents)
-                )
-
-            if not isinstance(state_count_data.columns, pd.MultiIndex):
-                state_count_data.columns = pd.MultiIndex.from_arrays(
-                    [state_count_data.columns]
-                )
-
-            # reindex rows & columns to sort them and to add missing ones
-            # missing row    = some state of 'variable' did not occur in data
-            # missing column = some state configuration of current 'variable's parents
-            #                  did not occur in data
-            row_index = self.state_names[variable]
-            column_index = pd.MultiIndex.from_product(parents_states, names=parents)
-            state_counts = state_count_data.reindex(
-                index=row_index, columns=column_index
-            ).fillna(0)
-
-        return state_counts
+        return get_state_counts(
+            data=self.data,
+            state_names=self.state_names,
+            variable=variable,
+            parents=parents,
+            reindex=reindex,
+        )
 
 
 class ParameterEstimator(BaseEstimator):
+    """
+    Base class for parameter estimators in pgmpy.
+
+    Parameters
+    ----------
+    model: pgmpy.models.DiscreteBayesianNetwork or pgmpy.models.DiscreteMarkovNetwork model
+        for which parameter estimation is to be done.
+
+    data: pandas DataFrame object
+        dataframe object with column names identical to the variable names of the model.
+        (If some values in the data are missing the data cells should be set to `numpy.nan`.
+        Note that pandas converts each column containing `numpy.nan`s to dtype `float`.)
+
+    state_names: dict (optional)
+        A dict indicating, for each variable, the discrete set of states (or values)
+        that the variable can take. If unspecified, the observed values in the data set
+        are taken to be the only possible states.
+    """
+
     def __init__(self, model, data, **kwargs):
         """
         Base class for parameter estimators in pgmpy.
 
         Parameters
         ----------
-        model: pgmpy.models.BayesianNetwork or pgmpy.models.MarkovNetwork or pgmpy.models.NoisyOrModel model
+        model: pgmpy.models.DiscreteBayesianNetwork or pgmpy.models.DiscreteMarkovNetwork model
             for which parameter estimation is to be done.
 
         data: pandas DataFrame object
             dataframe object with column names identical to the variable names of the model.
-            (If some values in the data are missing the data cells should be set to `numpy.NaN`.
-            Note that pandas converts each column containing `numpy.NaN`s to dtype `float`.)
+            (If some values in the data are missing the data cells should be set to `numpy.nan`.
+            Note that pandas converts each column containing `numpy.nan`s to dtype `float`.)
 
         state_names: dict (optional)
             A dict indicating, for each variable, the discrete set of states (or values)
@@ -202,17 +157,12 @@ class ParameterEstimator(BaseEstimator):
         complete_samples_only: bool (optional, default `True`)
             Specifies how to deal with missing data, if present. If set to `True` all rows
             that contain `np.Nan` somewhere are ignored. If `False` then, for each variable,
-            every row where neither the variable nor its parents are `np.NaN` is used.
+            every row where neither the variable nor its parents are `np.nan` is used.
             This sets the behavior of the `state_count`-method.
         """
-
-        if not (set(model.nodes()) - model.latents) <= set(data.columns.values):
-            raise ValueError(
-                "variable names of the model must be identical to column names in data"
-            )
         self.model = model
 
-        super(ParameterEstimator, self).__init__(data, **kwargs)
+        super().__init__(data, **kwargs)
 
     def state_counts(self, variable, weighted=False, **kwargs):
         """
@@ -225,12 +175,6 @@ class ParameterEstimator(BaseEstimator):
         variable: string
             Name of the variable for which the state count is to be done.
 
-        complete_samples_only: bool
-            Specifies how to deal with missing data, if present. If set to `True` all rows
-            that contain `np.NaN` somewhere are ignored. If `False` then
-            every row where neither the variable nor its parents are `np.NaN` is used.
-            Desired default behavior can be passed to the class constructor.
-
         Returns
         -------
         state_counts: pandas.DataFrame
@@ -239,60 +183,182 @@ class ParameterEstimator(BaseEstimator):
         Examples
         --------
         >>> import pandas as pd
-        >>> from pgmpy.models import BayesianNetwork
+        >>> from pgmpy.models import DiscreteBayesianNetwork
         >>> from pgmpy.estimators import ParameterEstimator
-        >>> model = BayesianNetwork([('A', 'C'), ('B', 'C')])
-        >>> data = pd.DataFrame(data={'A': ['a1', 'a1', 'a2'],
-                                      'B': ['b1', 'b2', 'b1'],
-                                      'C': ['c1', 'c1', 'c2']})
+        >>> model = DiscreteBayesianNetwork([("A", "C"), ("B", "C")])
+        >>> data = pd.DataFrame(
+        ...     data={
+        ...         "A": ["a1", "a1", "a2"],
+        ...         "B": ["b1", "b2", "b1"],
+        ...         "C": ["c1", "c1", "c2"],
+        ...     }
+        ... )
         >>> estimator = ParameterEstimator(model, data)
-        >>> estimator.state_counts('A')
-            A
-        a1  2
-        a2  1
-        >>> estimator.state_counts('C')
-        A  a1      a2
-        B  b1  b2  b1  b2
-        C
-        c1  1   1   0   0
-        c2  0   0   1   0
+        >>> estimator.state_counts(variable="A").values
+        array([[2],
+               [1]])
+        >>> estimator.state_counts(variable="C").values
+        array([[1., 1., 0., 0.],
+               [0., 0., 1., 0.]])
         """
 
         parents = sorted(self.model.get_parents(variable))
-        return super(ParameterEstimator, self).state_counts(
-            variable, parents=parents, weighted=weighted, **kwargs
-        )
+        return super().state_counts(variable, parents=parents, weighted=weighted, **kwargs)
 
 
 class StructureEstimator(BaseEstimator):
+    """
+    Base class for structure estimators in pgmpy.
+
+    Parameters
+    ----------
+    data: pandas DataFrame object
+        dataframe object where each column represents one variable.
+        (If some values in the data are missing the data cells should be set to `numpy.nan`.
+        Note that pandas converts each column containing `numpy.nan`s to dtype `float`.)
+
+    state_names: dict (optional)
+        A dict indicating, for each variable, the discrete set of states (or values)
+        that the variable can take. If unspecified, the observed values in the data set
+        are taken to be the only possible states.
+    """
+
     def __init__(self, data=None, independencies=None, **kwargs):
-        """
-        Base class for structure estimators in pgmpy.
-
-        Parameters
-        ----------
-        data: pandas DataFrame object
-            dataframe object where each column represents one variable.
-            (If some values in the data are missing the data cells should be set to `numpy.NaN`.
-            Note that pandas converts each column containing `numpy.NaN`s to dtype `float`.)
-
-        state_names: dict (optional)
-            A dict indicating, for each variable, the discrete set of states (or values)
-            that the variable can take. If unspecified, the observed values in the data set
-            are taken to be the only possible states.
-
-        complete_samples_only: bool (optional, default `True`)
-            Specifies how to deal with missing data, if present. If set to `True` all rows
-            that contain `np.Nan` somewhere are ignored. If `False` then, for each variable,
-            every row where neither the variable nor its parents are `np.NaN` is used.
-            This sets the behavior of the `state_count`-method.
-        """
-
         self.independencies = independencies
         if self.independencies is not None:
             self.variables = self.independencies.get_all_variables()
 
-        super(StructureEstimator, self).__init__(data=data, **kwargs)
+        super().__init__(data=data, **kwargs)
+
+    def estimate(self):
+        pass
+
+
+class MarginalEstimator(BaseEstimator):
+    """
+    Base class for marginal estimators in pgmpy.
+
+    Parameters
+    ----------
+    model: DiscreteMarkovNetwork | FactorGraph | JunctionTree
+        A model to optimize, using Belief Propagation and an estimation method.
+
+    data: pandas DataFrame object
+        dataframe object where each column represents one variable.
+        (If some values in the data are missing the data cells should be set to `numpy.nan`.
+        Note that pandas converts each column containing `numpy.nan`s to dtype `float`.)
+
+    state_names: dict (optional)
+        A dict indicating, for each variable, the discrete set of states (or values)
+        that the variable can take. If unspecified, the observed values in the data set
+        are taken to be the only possible states.
+    """
+
+    def __init__(self, model, data, **kwargs):
+        super().__init__(data, **kwargs)
+        self.belief_propagation = BeliefPropagation(model=model)
+        self.theta = None
+
+    @staticmethod
+    def _clique_to_marginal(marginals, clique_nodes):
+        """
+        Construct a minimal mapping from cliques to marginals.
+
+        Parameters
+        ----------
+        marginals: FactorDict
+            A mapping from cliques to factors.
+
+        clique_nodes: List[Tuple[str, ...]]
+            Cliques that exist within a different FactorDict.
+
+        Returns
+        -------
+        clique_to_marginal: A mapping from clique to a list of marginals
+        such that each clique is a super set of the marginals it is associated with.
+        """
+        clique_to_marginal = defaultdict(lambda: [])
+        for marginal_clique, marginal in marginals.items():
+            for clique in clique_nodes:
+                if set(marginal_clique) <= set(clique):
+                    clique_to_marginal[clique].append(marginal)
+                    break
+            else:
+                raise ValueError(
+                    "Could not find a corresponding clique for"
+                    + f" marginal: {marginal_clique}"
+                    + f" out of cliques: {clique_nodes}"
+                )
+        return clique_to_marginal
+
+    def _marginal_loss(self, marginals, clique_to_marginal, metric):
+        """
+        Compute the loss and gradient for a given dictionary of clique beliefs.
+
+        Parameters
+        ----------
+        marginals: FactorDict
+            A mapping from a clique to an observed marginal represented by a `DiscreteFactor`.
+
+        clique_to_marginal: Dict[Tuple[str, ...], List[DiscreteFactor]]
+            A mapping from a Junction Tree's clique to a list of corresponding marginals
+            such that a clique is a superset of the marginal with the constraint that
+            each marginal only appears once across all cliques.
+
+        metric: str
+            One of either 'L1' or 'L2'.
+
+        Returns
+        -------
+        Loss and gradient of the loss: Tuple[float, pgmpy.factors.FactorDict.FactorDict]
+            Marginal loss and the gradients of the loss with respect to the estimated beliefs.
+        """
+        loss = 0.0
+        gradient = FactorDict({})
+
+        for clique, mu in marginals.items():
+            # Initialize a gradient for this clique as zero.
+            gradient[clique] = mu.identity_factor() * 0
+
+            # Iterate over all marginals involving this clique.
+            for y in clique_to_marginal[clique]:
+                # Step 1: Marginalize the clique to the size of `y`.
+                projection_variables = list(set(mu.scope()) - set(y.scope()))
+                mu2 = mu.marginalize(
+                    variables=projection_variables,
+                    inplace=False,
+                )
+
+                if not isinstance(mu2, DiscreteFactor):
+                    raise TypeError(f"Expecting a DiscreteFactor but found {type(mu2)}")
+
+                # Step 2: Compute the difference between the `mu2` and `y`.
+                diff_factor = mu2 + (y * -1)
+
+                if not diff_factor:
+                    raise ValueError("An error occured when calculating the gradient.")
+
+                diff = diff_factor.values.flatten()
+
+                # Step 3: Compute the loss and gradient based upon the metric.
+                if metric == "L1":
+                    loss += abs(diff).sum()
+                    grad = diff.sign() if hasattr(diff, "sign") else np.sign(diff)
+                elif metric == "L2":
+                    loss += 0.5 * (diff @ diff)
+                    grad = diff
+                else:
+                    raise ValueError("Metric must be one of L1 or L2.")
+
+                # Step 4: Update the gradient from this marginal.
+                gradient[clique] += DiscreteFactor(
+                    variables=mu2.scope(),
+                    cardinality=mu2.cardinality,
+                    values=grad,
+                    state_names=mu2.state_names,
+                )
+
+        return loss, gradient
 
     def estimate(self):
         pass

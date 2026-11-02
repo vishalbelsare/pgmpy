@@ -1,13 +1,13 @@
-import logging
 from math import isclose
 
+from skbase.utils.dependencies import _safe_import
+from sklearn.exceptions import ConvergenceWarning
 
-try:  # pragma: no cover
-    import torch
+from pgmpy import logger
+from pgmpy.utils._warnings import _warn_external
 
-    optim = torch.optim
-except ImportError:  # pragma: no cover
-    optim = None
+torch = _safe_import("torch")
+optim = _safe_import("torch.optim")
 
 
 def pinverse(t):
@@ -28,9 +28,7 @@ def pinverse(t):
     return t_inv
 
 
-def optimize(
-    loss_fn, params={}, loss_args={}, opt="adam", max_iter=10000, exit_delta=1e-4
-):
+def optimize(loss_fn, params={}, loss_args={}, opt="adam", max_iter=10000, exit_delta=1e-4):
     """
     Generic function to optimize loss functions.
 
@@ -73,6 +71,11 @@ def optimize(
     -------
     dict: The values that were given in params in the same format.
 
+    Warns
+    -----
+    ConvergenceWarning
+        If optimization does not converge within `max_iter` iterations.
+
     Examples
     --------
     """
@@ -105,12 +108,14 @@ def optimize(
         opt.step(closure=closure)
 
         if isclose(init_loss, closure().item(), abs_tol=exit_delta):
-            logging.info(f"Converged after {t} iterations.")
+            logger.info(f"Converged after {t + 1} iterations.")
             return params
         else:
             init_loss = closure().item()
 
-    logging.info(
-        f"Couldn't converge after {max_iter} iterations. Try increasing max_iter or change optimizer parameters"
+    _warn_external(
+        f"Optimization did not converge after {max_iter} iterations. "
+        "Try increasing max_iter or changing optimizer parameters.",
+        ConvergenceWarning,
     )
     return params

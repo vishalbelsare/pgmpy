@@ -1,70 +1,65 @@
 #!/usr/bin/env python
 
-import logging
 from itertools import combinations
 
 import networkx as nx
 
-from pgmpy.estimators import StructureEstimator, ScoreCache
-from pgmpy.estimators import K2Score
-from pgmpy.utils.mathext import powerset
 from pgmpy.base import DAG
+from pgmpy.estimators import StructureEstimator
+from pgmpy.structure_score import get_scoring_method
+from pgmpy.utils._warnings import _warn_external
+from pgmpy.utils.mathext import powerset
 
 
 class ExhaustiveSearch(StructureEstimator):
+    """
+    Search class for exhaustive searches over all DAGs with a given set of variables.
+    Takes a `StructureScore`-Instance as parameter; `estimate` finds the model with maximal score.
+
+    Parameters
+    ----------
+    data: pandas DataFrame object
+        dataframe object where each column represents one variable.
+        (If some values in the data are missing the data cells should be set to `numpy.NaN`.
+        Note that pandas converts each column containing `numpy.NaN`s to dtype `float`.)
+
+    scoring_method: Instance of a `StructureScore`-subclass (`K2` is used as default)
+        An instance of `K2`, `BDeu`, `BIC` or 'AIC'.
+        This score is optimized during structure estimation by the `estimate`-method.
+
+    state_names: dict (optional)
+        A dict indicating, for each variable, the discrete set of states (or values)
+        that the variable can take. If unspecified, the observed values in the data set
+        are taken to be the only possible states.
+
+    use_caching: boolean
+        If True, uses caching of score for faster computation.
+        Note: Caching only works for scoring methods which are decomposable. Can
+        give wrong results in case of custom scoring methods.
+    """
+
     def __init__(self, data, scoring_method=None, use_cache=True, **kwargs):
-        """
-        Search class for exhaustive searches over all DAGs with a given set of variables.
-        Takes a `StructureScore`-Instance as parameter; `estimate` finds the model with maximal score.
-
-        Parameters
-        ----------
-        data: pandas DataFrame object
-            dataframe object where each column represents one variable.
-            (If some values in the data are missing the data cells should be set to `numpy.NaN`.
-            Note that pandas converts each column containing `numpy.NaN`s to dtype `float`.)
-
-        scoring_method: Instance of a `StructureScore`-subclass (`K2Score` is used as default)
-            An instance of `K2Score`, `BDeuScore`, or `BicScore`.
-            This score is optimized during structure estimation by the `estimate`-method.
-
-        state_names: dict (optional)
-            A dict indicating, for each variable, the discrete set of states (or values)
-            that the variable can take. If unspecified, the observed values in the data set
-            are taken to be the only possible states.
-
-        use_caching: boolean
-            If True, uses caching of score for faster computation.
-            Note: Caching only works for scoring methods which are decomposable. Can
-            give wrong results in case of custom scoring methods.
-
-        complete_samples_only: bool (optional, default `True`)
-            Specifies how to deal with missing data, if present. If set to `True` all rows
-            that contain `np.Nan` somewhere are ignored. If `False` then, for each variable,
-            every row where neither the variable nor its parents are `np.NaN` is used.
-            This sets the behavior of the `state_count`-method.
-        """
-        if scoring_method is not None:
-            if use_cache:
-                self.scoring_method = ScoreCache.ScoreCache(scoring_method, data)
-            else:
-                self.scoring_method = scoring_method
-        else:
-            self.scoring_method = ScoreCache.ScoreCache(K2Score(data, **kwargs), data)
-
-        super(ExhaustiveSearch, self).__init__(data, **kwargs)
+        super().__init__(data, **kwargs)
+        # Canonical structure scores cache local scores internally (see their
+        # `max_cache_size` parameter), so `use_cache` no longer needs a wrapper.
+        self.scoring_method = get_scoring_method(scoring_method, self.data)
 
     def all_dags(self, nodes=None):
         """
         Computes all possible directed acyclic graphs with a given set of nodes,
-        sparse ones first. `2**(n*(n-1))` graphs need to be searched, given `n` nodes,
-        so this is likely not feasible for n>6. This is a generator.
+        sparse ones first. `2**(n*(n-1))` candidate directed graphs need to be searched,
+        given `n` nodes, so this is likely not feasible for n>6. This is a generator.
 
         Parameters
         ----------
         nodes: list of nodes for the DAGs (optional)
             A list of the node names that the generated DAGs should have.
             If not provided, nodes are taken from data.
+
+        Warns
+        -----
+        UserWarning
+            If more than six nodes would make exhaustive enumeration impractical.
 
         Returns
         -------
@@ -75,28 +70,53 @@ class ExhaustiveSearch(StructureEstimator):
         --------
         >>> import pandas as pd
         >>> from pgmpy.estimators import ExhaustiveSearch
-        >>> s = ExhaustiveSearch(pd.DataFrame(data={'Temperature': [23, 19],
-                                                    'Weather': ['sunny', 'cloudy'],
-                                                    'Humidity': [65, 75]}))
-        >>> list(s.all_dags())
-        [<networkx.classes.digraph.DiGraph object at 0x7f6955216438>,
-         <networkx.classes.digraph.DiGraph object at 0x7f6955216518>,
-        ....
-        >>> [dag.edges() for dag in s.all_dags()]
-        [[], [('Humidity', 'Temperature')], [('Humidity', 'Weather')],
-        [('Temperature', 'Weather')], [('Temperature', 'Humidity')],
-        ....
-        [('Weather', 'Humidity'), ('Weather', 'Temperature'), ('Temperature', 'Humidity')]]
-
+        >>> data = pd.DataFrame(
+        ...     data={
+        ...         "Temperature": [23, 19],
+        ...         "Weather": ["sunny", "cloudy"],
+        ...         "Humidity": [65, 75],
+        ...     }
+        ... )
+        >>> est = ExhaustiveSearch(data)
+        >>> list(est.all_dags())  # doctest: +ELLIPSIS
+        [<networkx.classes.digraph.DiGraph object at 0x...>, <networkx.classes.digraph.DiGraph object at 0x...>, ...]
+        >>> [
+        ...     list(dag.edges()) for dag in est.all_dags()
+        ... ]  # doctest: +NORMALIZE_WHITESPACE
+        [[],
+        [('Humidity', 'Temperature')],
+        [('Humidity', 'Weather')],
+        [('Temperature', 'Weather')],
+        [('Temperature', 'Humidity')],
+        [('Weather', 'Humidity')],
+        [('Weather', 'Temperature')],
+        [('Humidity', 'Temperature'), ('Humidity', 'Weather')],
+        [('Humidity', 'Temperature'), ('Temperature', 'Weather')],
+        [('Humidity', 'Temperature'), ('Weather', 'Humidity')],
+        [('Humidity', 'Temperature'), ('Weather', 'Temperature')],
+        [('Humidity', 'Weather'), ('Temperature', 'Weather')],
+        [('Humidity', 'Weather'), ('Temperature', 'Humidity')],
+        [('Humidity', 'Weather'), ('Weather', 'Temperature')],
+        [('Temperature', 'Weather'), ('Temperature', 'Humidity')],
+        [('Temperature', 'Weather'), ('Weather', 'Humidity')],
+        [('Temperature', 'Humidity'), ('Weather', 'Humidity')],
+        [('Temperature', 'Humidity'), ('Weather', 'Temperature')],
+        [('Weather', 'Humidity'), ('Weather', 'Temperature')],
+        [('Humidity', 'Temperature'), ('Humidity', 'Weather'), ('Temperature', 'Weather')],
+        [('Humidity', 'Temperature'), ('Humidity', 'Weather'), ('Weather', 'Temperature')],
+        [('Humidity', 'Temperature'), ('Weather', 'Humidity'), ('Weather', 'Temperature')],
+        [('Humidity', 'Weather'), ('Temperature', 'Weather'), ('Temperature', 'Humidity')],
+        [('Temperature', 'Weather'), ('Temperature', 'Humidity'), ('Weather', 'Humidity')],
+        [('Temperature', 'Humidity'), ('Weather', 'Humidity'), ('Weather', 'Temperature')]]
         """
         if nodes is None:
             nodes = sorted(self.state_names.keys())
         if len(nodes) > 6:
-            logging.info("Generating all DAGs of n nodes likely not feasible for n>6!")
-            logging.info(
-                "Attempting to search through {n} graphs".format(
-                    n=2 ** (len(nodes) * (len(nodes) - 1))
-                )
+            candidate_count = 2 ** (len(nodes) * (len(nodes) - 1))
+            _warn_external(
+                f"Exhaustive search over {len(nodes)} nodes examines {candidate_count:,} candidate directed graphs. "
+                "Reduce the node set or use a non-exhaustive estimator.",
+                UserWarning,
             )
 
         edges = list(combinations(nodes, 2))  # n*(n-1) possible directed edges
@@ -123,38 +143,47 @@ class ExhaustiveSearch(StructureEstimator):
         --------
         >>> import pandas as pd
         >>> import numpy as np
-        >>> from pgmpy.estimators import ExhaustiveSearch, K2Score
+        >>> from pgmpy.estimators import ExhaustiveSearch, K2
+        >>> # Setting the random seed for reproducibility
+        >>> np.random.seed(42)
         >>> # create random data sample with 3 variables, where B and C are identical:
-        >>> data = pd.DataFrame(np.random.randint(0, 5, size=(5000, 2)), columns=list('AB'))
-        >>> data['C'] = data['B']
-        >>> searcher = ExhaustiveSearch(data, scoring_method=K2Score(data))
-        >>> for score, model in searcher.all_scores():
-        ...   print("{0}\t{1}".format(score, model.edges()))
-        -24234.44977974726      [('A', 'B'), ('A', 'C')]
-        -24234.449760691063     [('A', 'B'), ('C', 'A')]
-        -24234.449760691063     [('A', 'C'), ('B', 'A')]
-        -24203.700955937973     [('A', 'B')]
-        -24203.700955937973     [('A', 'C')]
-        -24203.700936881774     [('B', 'A')]
-        -24203.700936881774     [('C', 'A')]
-        -24203.700936881774     [('B', 'A'), ('C', 'A')]
-        -24172.952132128685     []
-        -16597.30920265254      [('A', 'B'), ('A', 'C'), ('B', 'C')]
-        -16597.30920265254      [('A', 'B'), ('A', 'C'), ('C', 'B')]
-        -16597.309183596342     [('A', 'B'), ('C', 'A'), ('C', 'B')]
-        -16597.309183596342     [('A', 'C'), ('B', 'A'), ('B', 'C')]
-        -16566.560378843253     [('A', 'B'), ('C', 'B')]
-        -16566.560378843253     [('A', 'C'), ('B', 'C')]
-        -16268.324549347722     [('A', 'B'), ('B', 'C')]
-        -16268.324549347722     [('A', 'C'), ('C', 'B')]
-        -16268.324530291524     [('B', 'A'), ('B', 'C')]
-        -16268.324530291524     [('B', 'C'), ('C', 'A')]
-        -16268.324530291524     [('B', 'A'), ('C', 'B')]
-        -16268.324530291524     [('C', 'A'), ('C', 'B')]
-        -16268.324530291524     [('B', 'A'), ('B', 'C'), ('C', 'A')]
-        -16268.324530291524     [('B', 'A'), ('C', 'A'), ('C', 'B')]
-        -16237.575725538434     [('B', 'C')]
-        -16237.575725538434     [('C', 'B')]
+        >>> data = pd.DataFrame(
+        ...     np.random.randint(low=0, high=5, size=(5000, 2)), columns=list("AB")
+        ... )
+        >>> data["C"] = data["B"]
+        >>> searcher = ExhaustiveSearch(data, scoring_method=K2(data))
+        >>> for score, model in sorted(
+        ...     searcher.all_scores(),
+        ...     key=lambda x: (round(x[0], 6), sorted(x[1].edges())),
+        ... ):
+        ...     print(
+        ...         "{:.6f}\t{}".format(score, sorted(model.edges()))
+        ...     )  # doctest: +NORMALIZE_WHITESPACE
+        -24240.048463     [('A', 'B'), ('A', 'C')]
+        -24240.037939     [('A', 'B'), ('C', 'A')]
+        -24240.037939     [('A', 'C'), ('B', 'A')]
+        -24207.216720     [('A', 'B')]
+        -24207.216720     [('A', 'C')]
+        -24207.206196     [('B', 'A')]
+        -24207.206196     [('B', 'A'), ('C', 'A')]
+        -24207.206196     [('C', 'A')]
+        -24174.384977     []
+        -16601.326068     [('A', 'B'), ('A', 'C'), ('B', 'C')]
+        -16601.326068     [('A', 'B'), ('A', 'C'), ('C', 'B')]
+        -16601.315544     [('A', 'B'), ('C', 'A'), ('C', 'B')]
+        -16601.315544     [('A', 'C'), ('B', 'A'), ('B', 'C')]
+        -16568.494325     [('A', 'B'), ('C', 'B')]
+        -16568.494325     [('A', 'C'), ('B', 'C')]
+        -16272.269478     [('A', 'B'), ('B', 'C')]
+        -16272.269478     [('A', 'C'), ('C', 'B')]
+        -16272.258953     [('B', 'A'), ('B', 'C')]
+        -16272.258953     [('B', 'A'), ('B', 'C'), ('C', 'A')]
+        -16272.258953     [('B', 'A'), ('C', 'A'), ('C', 'B')]
+        -16272.258953     [('B', 'A'), ('C', 'B')]
+        -16272.258953     [('B', 'C'), ('C', 'A')]
+        -16272.258953     [('C', 'A'), ('C', 'B')]
+        -16239.437735     [('B', 'C')]
+        -16239.437735     [('C', 'B')]
         """
 
         scored_dags = sorted(
@@ -178,15 +207,18 @@ class ExhaustiveSearch(StructureEstimator):
         --------
         >>> import pandas as pd
         >>> import numpy as np
-        >>> from pgmpy.estimators import ExhaustiveSearch
+        >>> from pgmpy.estimators import ExhaustiveSearch, K2
         >>> # create random data sample with 3 variables, where B and C are identical:
-        >>> data = pd.DataFrame(np.random.randint(0, 5, size=(5000, 2)), columns=list('AB'))
-        >>> data['C'] = data['B']
-        >>> est = ExhaustiveSearch(data)
+        >>> np.random.seed(42)
+        >>> data = pd.DataFrame(
+        ...     np.random.randint(low=0, high=5, size=(5000, 2)), columns=list("AB")
+        ... )
+        >>> data["C"] = data["B"]
+        >>> est = ExhaustiveSearch(data, scoring_method=K2(data))
         >>> best_model = est.estimate()
-        >>> best_model
-        <pgmpy.base.DAG.DAG object at 0x7f695c535470>
-        >>> best_model.edges()
+        >>> best_model  # doctest: +ELLIPSIS
+        <pgmpy.base.DAG.DAG object at 0x...>
+        >>> sorted(best_model.edges())
         [('B', 'C')]
         """
 

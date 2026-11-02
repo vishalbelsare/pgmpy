@@ -1,14 +1,16 @@
 from collections import namedtuple
-from warnings import warn
+from itertools import chain, combinations
+from typing import Any
 
 import numpy as np
-from itertools import combinations, chain
 
+from pgmpy.utils import compat_fns
+from pgmpy.utils._warnings import _warn_external
 
 State = namedtuple("State", ["var", "state"])
 
 
-def cartesian(arrays, out=None):
+def cartesian(arrays: list[Any], out: np.ndarray | None = None) -> np.ndarray:
     """Generate a cartesian product of input arrays.
 
     Parameters
@@ -43,52 +45,70 @@ def cartesian(arrays, out=None):
 
     """
     arrays = [np.asarray(x) for x in arrays]
-    shape = (len(x) for x in arrays)
+    shape = [len(x) for x in arrays]
     dtype = arrays[0].dtype
 
     ix = np.indices(shape)
     ix = ix.reshape(len(arrays), -1).T
 
+    result: np.ndarray
     if out is None:
-        out = np.empty_like(ix, dtype=dtype)
+        result = np.empty_like(ix, dtype=dtype)
+    else:
+        result = out
 
-    for n, arr in enumerate(arrays):
-        out[:, n] = arrays[n][ix[:, n]]
+    for n, _ in enumerate(arrays):
+        result[:, n] = arrays[n][ix[:, n]]
 
-    return out
+    return result
 
 
-def _adjusted_weights(weights):
+def _adjusted_weights(weights: np.ndarray):
     """
-    Adjusts the weights such that it sums to 1. When the total weights is less
-    than or greater than 1 by 1e-3, add/substracts the difference from the last
-    element of weights. If the difference is greater than 1e-3, throws an error.
+    Adjust the largest weight so that the weights sum to 1.
+
+    Corrections within the dtype- and length-dependent roundoff tolerance are
+    silent. Larger corrections up to 1e-3 emit a warning, and discrepancies
+    greater than 1e-3 raise an error.
 
     Parameters
     ----------
     weights: 1-D numpy array
         The array for which to do the adjustment.
 
+    Warns
+    -----
+    UserWarning
+        If the accepted correction is larger than floating-point roundoff for the weight dtype and array length.
+
     Example
     -------
     >>> a = np.array([0.1111111] * 9)
-    >>> _adjusted_weights(a)
-    array([0.1111111, 0.1111111, 0.1111111, 0.1111111, 0.1111111, 0.1111111,
-           0.1111111, 0.1111111, 0.1111112])
+    >>> result = _adjusted_weights(a)
+    >>> bool(np.isclose(result.sum(), 1.0))
+    True
+    >>> int(np.sum(result != 0.1111111))  # Exactly one element was adjusted
+    1
     """
-    error = 1 - np.sum(weights)
+    weight_sum = weights.sum()
+    error = 1 - weight_sum
     if abs(error) > 1e-3:
         raise ValueError("The probability values do not sum to 1.")
     elif error != 0:
-        warn(
-            f"Probability values don't exactly sum to 1. Differ by: {error}. Adjusting values."
+        roundoff_tolerance = (
+            len(weights) * np.finfo(weights.dtype).eps if np.issubdtype(weights.dtype, np.inexact) else 0
         )
-        weights[-1] += error
+        if abs(error) > roundoff_tolerance:
+            _warn_external(
+                f"Probability values sum to {weight_sum}, not 1; adjusting the largest probability by {error}.",
+                UserWarning,
+            )
+        weights[compat_fns.argmax(weights)] += error
 
     return weights
 
 
-def sample_discrete(values, weights, size=1, seed=None):
+def sample_discrete(values, weights: np.ndarray | list[np.ndarray], size=1, seed: int | None = None):
     """
     Generate a sample of given size, given a probability mass function.
 
@@ -104,7 +124,7 @@ def sample_discrete(values, weights, size=1, seed=None):
         Size of the sample to be generated.
 
     seed: int (default: None)
-        If a value is provided, sets the seed for numpy.random.
+        If a value is provided, sets the seed for the random number generator.
 
     Returns
     -------
@@ -115,28 +135,34 @@ def sample_discrete(values, weights, size=1, seed=None):
     -------
     >>> import numpy as np
     >>> from pgmpy.utils.mathext import sample_discrete
-    >>> values = np.array(['v_0', 'v_1', 'v_2'])
+    >>> values = np.array(["v_0", "v_1", "v_2"])
     >>> probabilities = np.array([0.2, 0.5, 0.3])
     >>> sample_discrete(values, probabilities, 10, seed=0).tolist()
-    ['v_1', 'v_2', 'v_1', 'v_1', 'v_1', 'v_1', 'v_1', 'v_2', 'v_2', 'v_1']
+    ['v_1', 'v_1', 'v_0', 'v_0', 'v_2', 'v_2', 'v_1', 'v_2', 'v_1', 'v_2']
     """
-    if seed is not None:
-        np.random.seed(seed)
-
-    weights = np.array(weights)
+    rng = np.random.default_rng(seed) if seed is not None else np.random
+    weights = compat_fns.to_numpy(weights)
     if weights.ndim == 1:
-        return np.random.choice(values, size=size, p=_adjusted_weights(weights))
+        return rng.choice(compat_fns.to_numpy(values), size=size, p=_adjusted_weights(weights))
     else:
         samples = np.zeros(size, dtype=int)
         unique_weights, counts = np.unique(weights, axis=0, return_counts=True)
         for index, size in enumerate(counts):
-            samples[(weights == unique_weights[index]).all(axis=1)] = np.random.choice(
-                values, size=size, p=_adjusted_weights(unique_weights[index])
+            samples[(weights == unique_weights[index]).all(axis=1)] = rng.choice(
+                compat_fns.to_numpy(values),
+                size=size,
+                p=_adjusted_weights(unique_weights[index]),
             )
         return samples
 
 
-def sample_discrete_maps(states, weight_indices, index_to_weight, size=1, seed=None):
+def sample_discrete_maps(
+    states: np.ndarray,
+    weight_indices: np.ndarray,
+    index_to_weight: np.ndarray,
+    size=1,
+    seed: int | None = None,
+):
     """
     Generate a sample of given size, given a probability mass function.
 
@@ -155,7 +181,7 @@ def sample_discrete_maps(states, weight_indices, index_to_weight, size=1, seed=N
         Size of the sample to be generated.
 
     seed: int (default: None)
-        If a value is provided, sets the seed for numpy.random.
+        If a value is provided, sets the seed for the random number generator.
 
     Returns
     -------
@@ -166,32 +192,37 @@ def sample_discrete_maps(states, weight_indices, index_to_weight, size=1, seed=N
     -------
     >>> import numpy as np
     >>> from pgmpy.utils.mathext import sample_discrete
-    >>> values = np.array(['v_0', 'v_1', 'v_2'])
+    >>> values = np.array(["v_0", "v_1", "v_2"])
     >>> probabilities = np.array([0.2, 0.5, 0.3])
     >>> sample_discrete(values, probabilities, 10, seed=0).tolist()
-    ['v_1', 'v_2', 'v_1', 'v_1', 'v_1', 'v_1', 'v_1', 'v_2', 'v_2', 'v_1']
+    ['v_1', 'v_1', 'v_0', 'v_0', 'v_2', 'v_2', 'v_1', 'v_2', 'v_1', 'v_2']
     """
-    if seed is not None:
-        np.random.seed(seed)
+    rng = np.random.default_rng(seed) if seed is not None else np.random
+
+    # TODO: Remove this conversion and find a way to do this natively in torch.
+    states = np.array(states)
+    weight_indices = compat_fns.to_numpy(weight_indices)
+    index_to_weight = {key: compat_fns.to_numpy(value) for key, value in index_to_weight.items()}
+    size = int(size)
 
     samples = np.zeros(size, dtype=int)
     unique_weight_indices, counts = np.unique(weight_indices, return_counts=True)
 
     for weight_size, weight_index in zip(counts, unique_weight_indices):
-        samples[weight_indices == weight_index] = np.random.choice(
-            states, size=weight_size, p=index_to_weight[weight_index]
+        samples[(weight_indices == weight_index)] = rng.choice(
+            states, size=weight_size, p=_adjusted_weights(index_to_weight[weight_index])
         )
     return samples
 
 
-def powerset(l):
+def powerset(l_input: list):
     """
-    Generates all subsets of list `l` (as tuples).
+    Generates all subsets of list `l_input` (as tuples).
 
     Example
     -------
     >>> from pgmpy.utils.mathext import powerset
-    >>> list(powerset([1,2,3]))
+    >>> list(powerset([1, 2, 3]))
     [(), (1,), (2,), (3,), (1, 2), (1, 3), (2, 3), (1, 2, 3)]
     """
-    return chain.from_iterable(combinations(l, r) for r in range(len(l) + 1))
+    return chain.from_iterable(combinations(l_input, r) for r in range(len(l_input) + 1))

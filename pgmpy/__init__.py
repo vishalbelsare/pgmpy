@@ -1,4 +1,7 @@
-from .global_vars import HAS_PANDAS, device, no_progress
+from importlib.metadata import version
 
-__all__ = ["HAS_PANDAS", "device"]
-__version__ = "0.1.20"
+from .global_vars import config, logger
+
+__all__ = ["config", "logger"]
+
+__version__ = version("pgmpy")

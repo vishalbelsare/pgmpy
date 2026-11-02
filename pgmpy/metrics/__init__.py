@@ -1,9 +1,21 @@
-from .metrics import correlation_score, log_likelihood_score, structure_score
-from .bn_inference import BayesianModelProbability
-
+from ._base import BaseSupervisedMetric, BaseUnsupervisedMetric, get_metric
+from .adjacency_cm import AdjacencyConfusionMatrix
+from .correlation_score import CorrelationScore
+from .fisher_c import FisherC
+from .implied_cis import ImpliedCIs
+from .orientation_cm import OrientationConfusionMatrix
+from .shd import SHD
+from .structure_score import StructureScore
 
 __all__ = [
-    "correlation_score",
-    "log_likelihood_score",
-    "structure_score",
+    "BaseSupervisedMetric",
+    "BaseUnsupervisedMetric",
+    "get_metric",
+    "AdjacencyConfusionMatrix",
+    "OrientationConfusionMatrix",
+    "SHD",
+    "CorrelationScore",
+    "ImpliedCIs",
+    "FisherC",
+    "StructureScore",
 ]
